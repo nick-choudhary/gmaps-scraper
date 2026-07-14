@@ -141,7 +141,8 @@ Update this file after every meaningful implementation change.
 
 ## In Progress
 
-- None actively
+- [ ] Complete-scrape product hardening is in research/contract phase. Source-pinned findings and the reproduced Atlanta baseline are recorded in `docs/references/google-maps-scraper-benchmark.md`.
+- [ ] Await remaining user references and approval of public seams before implementation: named-location collection, honest completeness/boundary reporting, durable resume, progress, staged enrichment, `--max-contacts`, and contact precision.
 
 ## Next Up
 

@@ -128,10 +128,31 @@ Google's `[203]` format: `[203][0]` contains per-day entries: `['Wednesday', 3, 
 - Best practice: 1 proxy per ~50 concurrent requests, rotate every 100-200 requests
 
 ### Decisions Deferred
-- **Email extraction** (gosom's `-email` flag): would visit each business's website and regex for emails. Not yet implemented.
+- **Email extraction** (gosom's `-email` flag): implemented later as the opt-in website contact pass, including social-profile URLs. Precision hardening remains active work.
 - **Rust port**: Would give 3-5x throughput and 10x memory reduction. Not justified until Python throughput becomes the bottleneck.
 - **PostgreSQL/S3 output**: gosom has 6 output backends; we have JSON/CSV. Add when needed.
 - **Web UI / REST API**: gosom has full SaaS mode. Not in scope for a library.
+
+---
+
+## 2026-07-14 — Complete-Scrape Validation and Reference Baseline
+
+### Live findings
+
+- Natural-language search (`chiropractors in Atlanta, Georgia`) works without coordinates.
+- A 30-cell Atlanta grid returned 554 unique places when allowed to finish, but 220 were outside the requested bbox.
+- A 500-place cap stopped after 20/30 cells without a sufficiently explicit incomplete-run contract.
+- Combined grid + enrichment + contacts exceeded 20 minutes and lost all partial output on timeout.
+- Default long-run progress is inadequate; the final cell summary counts contributing cells rather than processed cells.
+- Contact extraction produced useful emails/socials but also obvious false positives (`%20...`, placeholder, and unrelated-domain addresses).
+
+### Research baseline
+
+- Added `docs/references/google-maps-scraper-benchmark.md` as the living, source-pinned benchmark.
+- References currently include Apify's article/current Actor/video, gosom at `0ef302e`, GoogleMapsCollector at `d1edca9`, and local Atlanta evidence.
+- Leading combined direction: Apify's separate what/where UX, GoogleMapsCollector's named-area resolution/filtering/incremental records, gosom's agent workflow, and this project's pure-HTTP/contact architecture.
+- Added requirement: `--max-contacts N` limits contact-enrichment attempts, not discovered places or total emails.
+- Implementation is intentionally gated until the user finishes supplying references and approves the public behavior seams.
 
 ---
 
