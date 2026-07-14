@@ -43,7 +43,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install lint dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,browser,mcp]"
       - run: ruff check src/ tests/ scripts/
       - run: ruff format --check src/ tests/ scripts/
       - run: mypy src/gmaps
