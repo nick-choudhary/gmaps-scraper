@@ -42,7 +42,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install ruff
+      - name: Install lint dependencies
+        run: pip install -e ".[dev]"
       - run: ruff check src/ tests/ scripts/
       - run: ruff format --check src/ tests/ scripts/
       - run: mypy src/gmaps
