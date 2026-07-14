@@ -1,0 +1,69 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Local credentials and captured browser state
+.env
+.env.*
+cookies.json
+identity.json
+schema.json
+.gmaps_scraper/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Build artifacts
+*.whl
+*.tar.gz
+
+# Project artifacts (debug scripts output, test files)
+test_output.json
+test_final.json
+smoke-*.json
+scripts/*.json
+scripts/raw_pb_response.txt
+scripts/maps_init_state.json
+
+# OS
+Thumbs.db
+
+# Scraped-data dumps (too large for git)
+nyc_restaurants_5k.json
+nyc_restaurants_5k_v2.json

@@ -1,0 +1,56 @@
+[
+  {
+    "name": "Golden Coffee Co",
+    "place_id": "ChIJgolden000000000000001",
+    "hex_id": "0xabc:0x1",
+    "ftid": "/g/gold1",
+    "data_id": "dataA",
+    "cid": "0xabc:0x1",
+    "contact": {
+      "phone": "(512) 555-0001",
+      "website": "https://goldencoffee.example",
+      "google_maps_url": "https://www.google.com/maps/place/?q=place_id:ChIJgolden000000000000001"
+    },
+    "address": {
+      "street": "1008 E 6th St",
+      "city": "Austin",
+      "full": "1008 E 6th St, Austin, TX 78702"
+    },
+    "location": {
+      "latitude": 30.27,
+      "longitude": -97.74
+    },
+    "business": {
+      "categories": [
+        "Coffee shop"
+      ]
+    }
+  },
+  {
+    "name": "Beacon Diner",
+    "place_id": "ChIJbeacon000000000000002",
+    "hex_id": "0xdef:0x2",
+    "ftid": "/g/beac2",
+    "data_id": "dataB",
+    "cid": "0xdef:0x2",
+    "contact": {
+      "phone": "(512) 555-0002",
+      "website": "https://beacondiner.example",
+      "google_maps_url": "https://www.google.com/maps/place/?q=place_id:ChIJbeacon000000000000002"
+    },
+    "address": {
+      "street": "55 Congress Ave",
+      "city": "Austin",
+      "full": "55 Congress Ave, Austin, TX 78701"
+    },
+    "location": {
+      "latitude": 30.28,
+      "longitude": -97.73
+    },
+    "business": {
+      "categories": [
+        "Diner"
+      ]
+    }
+  }
+]
