@@ -8,7 +8,7 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -251,7 +251,7 @@ class CollectionRunner:
                 if key in self.state.enriched_place_ids:
                     continue
                 place.enrichment_status = "in_progress"
-                place.enrichment_attempted_at = datetime.now(UTC).isoformat()
+                place.enrichment_attempted_at = datetime.now(timezone.utc).isoformat()
                 try:
                     await self.client.enrich(place, query=self.state.query)
                 except Exception as exc:  # one place must not discard the discovery run

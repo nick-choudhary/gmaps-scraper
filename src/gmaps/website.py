@@ -22,7 +22,7 @@ import re
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from urllib.parse import unquote, urljoin, urlparse
 
@@ -585,7 +585,7 @@ class WebsiteContactExtractor:
                 place.contact_status = "not_attempted_limit"  # type: ignore[attr-defined]
                 return ContactInfo(website=website)
             place.contact_status = "in_progress"  # type: ignore[attr-defined]
-            place.contact_attempted_at = datetime.now(UTC).isoformat()  # type: ignore[attr-defined]
+            place.contact_attempted_at = datetime.now(timezone.utc).isoformat()  # type: ignore[attr-defined]
             async with sem:
                 info = await self.extract(website)
             if info.emails:

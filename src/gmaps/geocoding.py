@@ -112,7 +112,7 @@ class NominatimResolver:
         if not query:
             raise ValueError("Location must not be empty")
 
-        params = {
+        params: dict[str, str | int] = {
             "q": query,
             "format": "jsonv2",
             "limit": 1,
