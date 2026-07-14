@@ -36,6 +36,26 @@ class TestParsedPlace:
         assert p.hours == {}
         assert p.is_ad is False
 
+    def test_canonical_json_round_trips_for_resume(self):
+        original = ParsedPlace(
+            name="Acme Chiropractic",
+            place_id="ChIJ-resume",
+            phone="(404) 555-0100",
+            website="https://acme.example",
+            address="123 Main St, Atlanta, GA",
+            rating=4.9,
+            review_count=123,
+            latitude=33.75,
+            longitude=-84.39,
+            categories=["Chiropractor"],
+            emails=["hello@acme.example"],
+            social_links={"instagram": "https://instagram.com/acme"},
+        )
+
+        restored = ParsedPlace.from_dict(original.to_dict())
+
+        assert restored.to_dict() == original.to_dict()
+
     def test_to_dict_removes_empty(self):
         p = ParsedPlace(name="Test Cafe", place_id="ChIJ123")
         d = p.to_dict()
@@ -117,9 +137,9 @@ class TestParsedPlace:
         assert p2.to_dict()["is_ad"] is True
 
     def test_field_count(self):
-        """Verify all 49 fields exist."""
+        """Verify the documented place schema remains intentional."""
         fields = ParsedPlace.__dataclass_fields__
-        assert len(fields) == 49, f"Expected 49 fields, got {len(fields)}"
+        assert len(fields) == 58, f"Expected 58 fields, got {len(fields)}"
         # Check key fields
         for f in [
             "name",

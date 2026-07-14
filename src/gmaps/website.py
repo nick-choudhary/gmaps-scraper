@@ -22,8 +22,9 @@ import re
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 if TYPE_CHECKING:
     from .contacts import ContactExtractor
@@ -57,7 +58,23 @@ _EMAIL_JUNK_DOMAINS = (
     "placeholder.com",
     "yourdomain.com",
     "mysite.com",
+    "youremail.com",
 )
+
+_CONSUMER_EMAIL_DOMAINS = {
+    "gmail.com",
+    "googlemail.com",
+    "yahoo.com",
+    "outlook.com",
+    "hotmail.com",
+    "live.com",
+    "icloud.com",
+    "me.com",
+    "aol.com",
+    "proton.me",
+    "protonmail.com",
+    "zoho.com",
+}
 # Filename-like matches: logo@2x.png etc.
 _EMAIL_JUNK_SUFFIXES = (
     ".png",
@@ -156,6 +173,8 @@ class ContactInfo:
     emails: list[str] = field(default_factory=list)
     social_links: dict[str, str] = field(default_factory=dict)
     pages_fetched: list[str] = field(default_factory=list)
+    email_sources: dict[str, str] = field(default_factory=dict)
+    social_sources: dict[str, str] = field(default_factory=dict)
     error: str = ""
     used_model: bool = False  # True if the optional model extractor contributed
 
@@ -189,7 +208,23 @@ def _is_junk_email(email: str) -> bool:
     return len(local) >= 24 and re.fullmatch(r"[0-9a-f]+", local) is not None
 
 
-def extract_emails(html: str) -> list[str]:
+def _email_matches_website(email: str, website_url: str) -> bool:
+    """Keep same-domain custom addresses plus common consumer mailboxes."""
+    email_domain = email.rsplit("@", 1)[1].lower().removeprefix("www.")
+    if email_domain in _CONSUMER_EMAIL_DOMAINS:
+        return True
+    website_host = (urlparse(normalize_website_url(website_url)).hostname or "").lower()
+    website_host = website_host.removeprefix("www.")
+    if not website_host:
+        return True
+    return (
+        email_domain == website_host
+        or email_domain.endswith("." + website_host)
+        or website_host.endswith("." + email_domain)
+    )
+
+
+def extract_emails(html: str, *, website_url: str = "") -> list[str]:
     """Extract deduplicated, filtered emails from HTML (order-preserving)."""
     found: list[str] = []
 
@@ -211,8 +246,13 @@ def extract_emails(html: str) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
     for e in found:
-        e = e.strip().strip(".").lower()
-        if e and e not in seen and not _is_junk_email(e):
+        e = unquote(e).strip().strip(".").lower()
+        if (
+            e
+            and e not in seen
+            and not _is_junk_email(e)
+            and (not website_url or _email_matches_website(e, website_url))
+        ):
             seen.add(e)
             result.append(e)
     return result
@@ -443,6 +483,8 @@ class WebsiteContactExtractor:
         emails: list[str] = []
         socials: dict[str, str] = {}
         seen_emails: set[str] = set()
+        email_sources: dict[str, str] = {}
+        social_sources: dict[str, str] = {}
         page_texts: list[str] = []
 
         for i, page_url in enumerate(pages):
@@ -461,12 +503,15 @@ class WebsiteContactExtractor:
                 continue
             page_texts.append(html)
 
-            for email in extract_emails(html):
+            for email in extract_emails(html, website_url=url):
                 if email not in seen_emails:
                     seen_emails.add(email)
                     emails.append(email)
+                    email_sources[email] = page_url
             for platform, link in extract_social_links(html).items():
-                socials.setdefault(platform, link)
+                if platform not in socials:
+                    socials[platform] = link
+                    social_sources[platform] = page_url
 
             # From the homepage, queue likely contact pages
             if i == 0:
@@ -482,20 +527,25 @@ class WebsiteContactExtractor:
                 if email not in seen_emails:
                     seen_emails.add(email)
                     emails.append(email)
+                    email_sources[email] = info.pages_fetched[0]
                     info.used_model = True
             for platform, link in mc.socials.items():
                 if platform not in socials:
                     socials[platform] = link
+                    social_sources[platform] = info.pages_fetched[0]
                     info.used_model = True
 
         info.emails = emails
         info.social_links = socials
+        info.email_sources = email_sources
+        info.social_sources = social_sources
         return info
 
     async def extract_batch(
         self,
         places: Sequence[object],
         concurrency: int | None = None,
+        max_contacts: int | None = None,
     ) -> list[ContactInfo]:
         """Extract contacts for a batch of ParsedPlace objects.
 
@@ -509,6 +559,15 @@ class WebsiteContactExtractor:
         self.configure_for_batch(len(places))
         effective_concurrency = concurrency or self.concurrency
         sem = asyncio.Semaphore(effective_concurrency)
+        eligible_indices = [
+            index for index, place in enumerate(places) if getattr(place, "website", "")
+        ]
+        budget = (
+            len(eligible_indices)
+            if max_contacts is None
+            else min(len(eligible_indices), max(0, max_contacts))
+        )
+        selected_indices = set(eligible_indices[:budget])
         logger.info(
             "Contact extraction: %d sites | auto concurrency=%d, timeout=%.0fs, pages=%d",
             len(places),
@@ -517,19 +576,32 @@ class WebsiteContactExtractor:
             self.max_pages,
         )
 
-        async def _one(place: object) -> ContactInfo:
+        async def _one(index: int, place: object) -> ContactInfo:
             website = getattr(place, "website", "") or ""
             if not website:
+                place.contact_status = "not_eligible_no_website"  # type: ignore[attr-defined]
                 return ContactInfo(error="no website")
+            if index not in selected_indices:
+                place.contact_status = "not_attempted_limit"  # type: ignore[attr-defined]
+                return ContactInfo(website=website)
+            place.contact_status = "in_progress"  # type: ignore[attr-defined]
+            place.contact_attempted_at = datetime.now(UTC).isoformat()  # type: ignore[attr-defined]
             async with sem:
                 info = await self.extract(website)
             if info.emails:
                 place.emails = info.emails  # type: ignore[attr-defined]
             if info.social_links:
                 place.social_links = info.social_links  # type: ignore[attr-defined]
+            place.contact_pages = info.pages_fetched  # type: ignore[attr-defined]
+            place.contact_sources = {  # type: ignore[attr-defined]
+                "emails": info.email_sources,
+                "social_links": info.social_sources,
+            }
+            place.contact_error = info.error  # type: ignore[attr-defined]
+            place.contact_status = "failed" if info.error else "completed"  # type: ignore[attr-defined]
             return info
 
-        results = await asyncio.gather(*(_one(p) for p in places))
+        results = await asyncio.gather(*(_one(index, place) for index, place in enumerate(places)))
         found = sum(1 for r in results if r.emails or r.social_links)
         logger.info(
             "Contact extraction: %d/%d sites yielded contacts",

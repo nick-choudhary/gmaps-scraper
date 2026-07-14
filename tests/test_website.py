@@ -1,6 +1,9 @@
 """Tests for website contact extraction (emails + social media URLs)."""
 
+import pytest
+
 from gmaps.website import (
+    ContactInfo,
     WebsiteContactExtractor,
     decode_cfemail,
     extract_emails,
@@ -49,6 +52,19 @@ class TestExtractEmails:
 
     def test_empty_html(self):
         assert extract_emails("") == []
+
+    def test_normalizes_url_encoded_prefix_and_filters_placeholder(self):
+        html = "%20inman@thetaylordocs.com inman@thetaylordocs.com email@youremail.com"
+
+        assert extract_emails(html) == ["inman@thetaylordocs.com"]
+
+    def test_website_context_rejects_unrelated_custom_domain_but_keeps_consumer_email(self):
+        html = "info@thetaylordocs.com free.estimates@fullcoveragellc.com owner@gmail.com"
+
+        assert extract_emails(html, website_url="https://thetaylordocs.com/buckhead") == [
+            "info@thetaylordocs.com",
+            "owner@gmail.com",
+        ]
 
 
 class TestDecodeCfemail:
@@ -255,3 +271,43 @@ class TestParsedPlaceIntegration:
         d = ParsedPlace(name="Acme", phone="555").to_dict()
         assert "emails" not in d.get("contact", {})
         assert "social_links" not in d.get("contact", {})
+
+
+class TestContactBudget:
+    @pytest.mark.asyncio
+    async def test_max_contacts_limits_attempts_not_places(self):
+        from gmaps.rpc.parser import ParsedPlace
+
+        class RecordingExtractor(WebsiteContactExtractor):
+            def __init__(self):
+                super().__init__()
+                self.attempted: list[str] = []
+
+            async def extract(self, website_url: str) -> ContactInfo:
+                self.attempted.append(website_url)
+                return ContactInfo(
+                    website=website_url,
+                    emails=[f"hello@{website_url.removeprefix('https://')}"],
+                    pages_fetched=[website_url],
+                    email_sources={f"hello@{website_url.removeprefix('https://')}": website_url},
+                )
+
+        places = [
+            ParsedPlace(name="First", place_id="one", website="https://first.example"),
+            ParsedPlace(name="Second", place_id="two", website="https://second.example"),
+            ParsedPlace(name="No site", place_id="three"),
+        ]
+        extractor = RecordingExtractor()
+
+        results = await extractor.extract_batch(places, max_contacts=1)
+
+        assert extractor.attempted == ["https://first.example"]
+        assert len(results) == 3
+        assert places[0].contact_status == "completed"
+        assert places[0].contact_attempted_at.endswith("+00:00")
+        assert places[1].contact_status == "not_attempted_limit"
+        assert places[2].contact_status == "not_eligible_no_website"
+        assert places[0].emails == ["hello@first.example"]
+        assert places[0].contact_sources["emails"]["hello@first.example"] == (
+            "https://first.example"
+        )

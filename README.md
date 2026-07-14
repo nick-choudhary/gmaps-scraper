@@ -167,8 +167,8 @@ Google Maps caps search results at ~120 per area. To get comprehensive coverage:
 
 1. Divide the target area into grid cells (configurable size, default 0.5km)
 2. Search each cell center independently
-3. Deduplicate results by `place_id`
-4. Stop when exhausted (3 consecutive cells <5 new results)
+3. Deduplicate with stable Google identifiers
+4. Search every planned cell unless interrupted or capped
 5. Randomize cell order to avoid detection
 
 ### Protocol
@@ -217,26 +217,43 @@ pip install -e ".[dev]"
 ### CLI
 
 ```bash
-# Mode 1: Fast search (default)
+# Fast search: write the place naturally (no coordinates required)
 gmaps search "coffee shops in Austin TX"
-gmaps search "restaurants" --lat 30.2672 --lng -97.7431
+
+# Comprehensive, boundary-filtered collection from a named location
+gmaps collect "chiropractors" --location "Atlanta, Georgia" \
+  --enrich --max-contacts 20 -o atlanta-chiropractors.json
+
+# If interrupted, continue from the durable checkpoint
+gmaps collect "chiropractors" --location "Atlanta, Georgia" \
+  --enrich --max-contacts 20 -o atlanta-chiropractors.json --resume
 
 # Mode 2: Search + enrichment (no login)
-gmaps search "coffee shops" --lat 30.2672 --lng -97.7431 --enrich
+gmaps search "coffee shops in Austin TX" --enrich
 
 # Mode 3: Search + enrichment (with login cookies)
-gmaps search "coffee shops" --lat 30.2672 --lng -97.7431 --enrich --cookies cookies.json
+gmaps search "coffee shops in Austin TX" --enrich --cookies cookies.json
 
-# Grid search for comprehensive coverage
+# Advanced: provide the boundary and cell size yourself
 gmaps grid "hvac" --bbox 40.4,-74.3,40.9,-73.6 --cell-size 0.5
 
 # JSON output
 gmaps search "hotels in Manhattan" -o results.json
 
-# Best-effort email + social-profile extraction from business websites
-gmaps search "plumbers" --lat 30.2672 --lng -97.7431 -n 10 \
-  --contacts --format json -o contacts.json
+# Attempt contacts for at most 10 eligible business websites
+gmaps search "plumbers in Austin TX" -n 50 \
+  --max-contacts 10 --format json -o contacts.json
 ```
+
+`collect` resolves the named area, chooses a grid size unless overridden,
+filters spillover results outside the resolved boundary, and writes four files:
+the final JSON, incremental JSONL records, an atomic checkpoint, and a run
+manifest. The manifest reports `complete`, any incompleteness reasons, cells
+processed/failed, duplicates, boundary rejections, and phase counts. A result
+cap or a saturated 120-result cell is treated as a completeness warning and
+produces `complete: false`. Each record also retains the grid cells where it
+was found. Before work starts, the CLI prints planned cells, approximate Google
+request volume, and enabled phases.
 
 ### Python API
 
@@ -341,10 +358,18 @@ Contact extraction is opt-in with `--contacts` or `GMapsClient.extract_contacts(
 It visits each business's own website and extracts contacts that are present in
 the returned page content.
 
+Use `--max-contacts N` to cap the number of eligible business websites attempted.
+This does not limit discovered Google Maps businesses or mean "find N emails."
+Every retained record receives a contact status; deferred records use
+`not_attempted_limit`. Extracted emails and social profiles include their source
+page in `contact_sources`.
+
 Email handling includes plain-text addresses, `mailto:` links, and Cloudflare
 `data-cfemail` deobfuscation. Social link handling covers LinkedIn, Facebook,
 Instagram, Twitter/X, YouTube, TikTok, Pinterest, WhatsApp, and Telegram while
-filtering common share/intent links and tracking parameters.
+filtering common share/intent links and tracking parameters. Email precision
+filters URL-encoded artifacts, placeholder domains, and unrelated custom domains;
+common consumer mail providers remain allowed.
 
 The default fetcher is direct HTTP. When configured, the fallback chain can use
 TinyFish, Firecrawl, or a proxy before falling back to direct HTTP:
@@ -465,7 +490,7 @@ gmaps-scraper/
 │       ├── encoder.py       # Request parameter encoding
 │       ├── decoder.py       # Response decoding (anti-XSSI)
 │       ├── pb_encoder.py    # pb= protobuf format encoding
-│       └── parser.py        # Response field extraction (47 fields)
+│       └── parser.py        # Response field extraction (58 fields)
 ├── scripts/                 # Test scripts
 ├── docs/                    # Protocol, fetching, and implementation guides
 ├── pyproject.toml

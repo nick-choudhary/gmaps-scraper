@@ -46,6 +46,7 @@ async def _do_search(
     max_results: int = 20,
     enrich: bool = False,
     contacts: bool = False,
+    max_contacts: int | None = None,
 ) -> list[dict[str, Any]]:
     """Execute a search and return list of grouped JSON dicts."""
     async with GMapsClient(enrich=enrich) as client:
@@ -59,8 +60,8 @@ async def _do_search(
         if enrich:
             for p in places:
                 await client.enrich(p, query=query)
-        if contacts:
-            await client.extract_contacts(places)
+        if contacts or max_contacts is not None:
+            await client.extract_contacts(places, max_contacts=max_contacts)
         return [p.to_dict() for p in places]
 
 
@@ -74,6 +75,7 @@ async def _do_grid_search(
     max_results: int = 500,
     enrich: bool = False,
     contacts: bool = False,
+    max_contacts: int | None = None,
 ) -> list[dict[str, Any]]:
     """Execute a grid search and return list of grouped JSON dicts."""
     async with GMapsClient(enrich=enrich) as client:
@@ -85,9 +87,71 @@ async def _do_grid_search(
             max_results=max_results,
         )
         places = [p for p, _ in results]
-        if contacts:
-            await client.extract_contacts(places)
+        if enrich:
+            for place in places:
+                await client.enrich(place, query=query)
+        if contacts or max_contacts is not None:
+            await client.extract_contacts(places, max_contacts=max_contacts)
         return [p.to_dict() for p in places]
+
+
+async def _do_collect(
+    query: str,
+    location: str | None,
+    output: str,
+    max_results: int = 500,
+    enrich: bool = False,
+    max_contacts: int | None = None,
+    contacts: bool = False,
+    resume: bool = False,
+) -> dict[str, Any]:
+    """Run the durable named-location workflow and return its manifest."""
+    from gmaps.collection import (
+        CollectionRunner,
+        CollectionState,
+        CollectionStore,
+        choose_cell_size,
+    )
+    from gmaps.geocoding import NominatimResolver
+
+    store = CollectionStore(output)
+    if resume:
+        state = store.load_state()
+        if state.query != query:
+            raise ValueError(f"Checkpoint query is {state.query!r}, not {query!r}")
+    else:
+        if store.output_path.exists() or store.state_path.exists() or store.jsonl_path.exists():
+            raise ValueError(
+                f"Output already exists for {output!r}; set resume=true or choose another path"
+            )
+        if not location:
+            raise ValueError("location is required for a fresh collection run")
+        resolved = await NominatimResolver().resolve(location)
+        bbox = resolved.bbox
+        state = CollectionState(
+            query=query,
+            location=location,
+            bbox={
+                "min_lat": bbox.min_lat,
+                "min_lon": bbox.min_lon,
+                "max_lat": bbox.max_lat,
+                "max_lon": bbox.max_lon,
+            },
+            cell_size_km=choose_cell_size(bbox),
+            max_results=max_results,
+            resolved_location=resolved.to_dict(),
+            enrich=enrich,
+            contacts=contacts or max_contacts is not None,
+            max_contacts=max_contacts,
+        )
+
+    async with GMapsClient(enrich=state.enrich) as client:
+        places, manifest = await CollectionRunner(
+            client=client,
+            store=store,
+            state=state,
+        ).run()
+    return {"manifest": manifest, "preview": [place.to_dict() for place in places[:10]]}
 
 
 async def _do_place_details(
@@ -146,6 +210,11 @@ if _HAS_MCP:
                             "default": False,
                             "description": "Visit each business website and extract emails + social media URLs (LinkedIn, Facebook, Instagram, etc.)",
                         },
+                        "max_contacts": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Maximum eligible websites to attempt; enables contacts",
+                        },
                     },
                     "required": ["query"],
                 },
@@ -169,8 +238,41 @@ if _HAS_MCP:
                             "default": False,
                             "description": "Extract emails + social media URLs from business websites",
                         },
+                        "max_contacts": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Maximum eligible websites to attempt; enables contacts",
+                        },
                     },
                     "required": ["query", "min_lat", "min_lon", "max_lat", "max_lon"],
+                },
+            ),
+            mcp_types.Tool(
+                name="collect",
+                description="Comprehensively collect businesses from a human-readable location with durable checkpoints, boundary filtering, and a machine-readable manifest.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "location": {
+                            "type": "string",
+                            "description": "Named city, region, postal code, or country",
+                        },
+                        "output": {
+                            "type": "string",
+                            "description": "Path for final JSON and checkpoint sidecars",
+                        },
+                        "max_results": {"type": "integer", "default": 500},
+                        "enrich": {"type": "boolean", "default": False},
+                        "max_contacts": {"type": "integer", "minimum": 0},
+                        "contacts": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Attempt every eligible website when no max_contacts is set",
+                        },
+                        "resume": {"type": "boolean", "default": False},
+                    },
+                    "required": ["query", "output"],
                 },
             ),
             mcp_types.Tool(
@@ -198,6 +300,8 @@ if _HAS_MCP:
             results = await _do_search(**arguments)
         elif name == "grid_search":
             results = await _do_grid_search(**arguments)
+        elif name == "collect":
+            results = [await _do_collect(**arguments)]
         elif name == "place_details":
             results = [await _do_place_details(**arguments)]
         else:
@@ -233,6 +337,8 @@ else:
                     results = await _do_search(**args)
                 elif tool in ("grid_search", "tools/call/grid_search"):
                     results = await _do_grid_search(**args)
+                elif tool in ("collect", "tools/call/collect"):
+                    results = [await _do_collect(**args)]
                 elif tool in ("place_details", "tools/call/place_details"):
                     results = [await _do_place_details(**args)]
                 else:

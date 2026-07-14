@@ -34,6 +34,16 @@ class ScraperStats:
     unique_places: int = 0
     enriched: int = 0
 
+    # Grid coverage and completeness
+    cells_total: int = 0
+    cells_completed: int = 0
+    cells_failed: int = 0
+    cells_with_unique: int = 0
+    cells_saturated: int = 0
+    duplicates: int = 0
+    outside_boundary: int = 0
+    cap_reached: bool = False
+
     # Timing
     start_time: float = field(default_factory=time.monotonic)
     end_time: float | None = None
@@ -56,6 +66,25 @@ class ScraperStats:
     def places_per_minute(self) -> float:
         elapsed_min = self.elapsed_seconds / 60
         return self.unique_places / elapsed_min if elapsed_min > 0 else 0.0
+
+    @property
+    def incomplete_reasons(self) -> list[str]:
+        """Machine-readable reasons a comprehensive run is not complete."""
+        reasons: list[str] = []
+        if self.cap_reached:
+            reasons.append("result_cap_reached")
+        if self.cells_failed:
+            reasons.append("cells_failed")
+        if self.cells_saturated:
+            reasons.append("saturated_cells")
+        if self.cells_total and self.cells_completed + self.cells_failed < self.cells_total:
+            reasons.append("cells_unprocessed")
+        return reasons
+
+    @property
+    def complete(self) -> bool:
+        """Whether every planned cell succeeded without truncation."""
+        return bool(self.cells_total) and not self.incomplete_reasons
 
     def record_request(self) -> None:
         self.total_requests += 1
@@ -93,7 +122,8 @@ class ScraperStats:
     def progress(self) -> str:
         """One-line progress string for logging."""
         return (
-            f"[{self.unique_places} places | {self.total_requests} req | "
+            f"[{self.cells_completed}/{self.cells_total} cells | "
+            f"{self.unique_places} places | {self.total_requests} req | "
             f"{self.failed} errors | {self.places_per_minute:.0f}/min | "
             f"{self.elapsed_seconds:.0f}s]"
         )
@@ -106,6 +136,12 @@ class ScraperStats:
             f"Total places found:  {self.total_places}",
             f"Unique places:       {self.unique_places}",
             f"Enriched:            {self.enriched}",
+            f"Cells:               {self.cells_completed}/{self.cells_total}",
+            f"Failed cells:        {self.cells_failed}",
+            f"Saturated cells:     {self.cells_saturated}",
+            f"Outside boundary:    {self.outside_boundary}",
+            f"Duplicates:          {self.duplicates}",
+            f"Complete:            {self.complete}",
             "",
             f"Requests:            {self.total_requests}",
             f"Successful:          {self.successful}",

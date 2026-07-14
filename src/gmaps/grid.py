@@ -25,6 +25,14 @@ class BoundingBox:
     max_lat: float
     max_lon: float
 
+    def contains(self, latitude: float | None, longitude: float | None) -> bool:
+        """Return whether a coordinate lies inside this box, including its edges."""
+        if latitude is None or longitude is None:
+            return False
+        return (
+            self.min_lat <= latitude <= self.max_lat and self.min_lon <= longitude <= self.max_lon
+        )
+
     @classmethod
     def from_string(cls, s: str) -> BoundingBox:
         """Parse "minLat,minLon,maxLat,maxLon" format.
@@ -63,6 +71,10 @@ class GridCell:
     def coordinates(self) -> str:
         """Return coordinates as a comma-separated string."""
         return f"{self.lat},{self.lon}"
+
+    def key(self) -> str:
+        """Stable checkpoint key for this cell."""
+        return f"{self.lat:.6f},{self.lon:.6f}"
 
     @property
     def latitude(self) -> float:
@@ -113,6 +125,14 @@ def generate_cells(bbox: BoundingBox, cell_size_km: float = 1.0) -> list[GridCel
             cells.append(GridCell(lat=lat, lon=lon))
             lon += lon_step
         lat += lat_step
+
+    if not cells and bbox.min_lat <= bbox.max_lat and bbox.min_lon <= bbox.max_lon:
+        cells.append(
+            GridCell(
+                lat=(bbox.min_lat + bbox.max_lat) / 2,
+                lon=(bbox.min_lon + bbox.max_lon) / 2,
+            )
+        )
 
     return cells
 

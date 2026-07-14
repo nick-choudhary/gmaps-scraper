@@ -268,6 +268,7 @@ class GMapsClient:
         concurrency: int | None = None,
         timeout: float | None = None,
         max_pages: int | None = None,
+        max_contacts: int | None = None,
         model_extractor: Any = None,
     ) -> list[ParsedPlace]:
         """Visit each place's website and extract emails + social media URLs.
@@ -292,6 +293,7 @@ class GMapsClient:
             concurrency: Override simultaneous website fetches (None = auto).
             timeout: Override per-request timeout in seconds (None = auto).
             max_pages: Override pages fetched per site (None = auto).
+            max_contacts: Maximum eligible websites to attempt (None = all).
 
         Returns:
             The same places (list), mutated with extracted contacts.
@@ -306,7 +308,7 @@ class GMapsClient:
             proxy=getattr(self._transport, "proxy", None),
             model_extractor=model_extractor,
         ) as extractor:
-            await extractor.extract_batch(batch)
+            await extractor.extract_batch(batch, max_contacts=max_contacts)
         return batch
 
     def get_stats(self) -> dict[str, Any]:

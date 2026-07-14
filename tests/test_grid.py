@@ -19,6 +19,14 @@ class TestBoundingBox:
         assert bbox.max_lat - bbox.min_lat == 1.0
         assert bbox.max_lon - bbox.min_lon == 1.0
 
+    def test_contains_includes_edges_and_rejects_outside_points(self):
+        bbox = BoundingBox(min_lat=33.64, min_lon=-84.55, max_lat=33.89, max_lon=-84.29)
+
+        assert bbox.contains(33.75, -84.40)
+        assert bbox.contains(33.64, -84.55)
+        assert not bbox.contains(33.90, -84.40)
+        assert not bbox.contains(33.75, -84.56)
+
 
 class TestGenerateCells:
     def test_generates_cells(self):
@@ -39,6 +47,13 @@ class TestGenerateCells:
         for cell in cells:
             assert bbox.min_lat <= cell.lat <= bbox.max_lat
             assert bbox.min_lon <= cell.lon <= bbox.max_lon
+
+    def test_large_cell_still_searches_small_area_once(self):
+        bbox = BoundingBox(min_lat=33.70, min_lon=-84.40, max_lat=33.71, max_lon=-84.39)
+
+        cells = generate_cells(bbox, cell_size_km=100)
+
+        assert cells == [GridCell(lat=33.705, lon=-84.39500000000001)]
 
 
 class TestEstimateCellCount:

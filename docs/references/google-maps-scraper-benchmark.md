@@ -265,32 +265,34 @@ Do not copy:
 - A CLI that secretly requires a separate server.
 - One overloaded limit for places, contact attempts, and emails.
 
-## Open decisions before implementation
+## Decisions implemented on 2026-07-14
 
-1. Keep the command name `grid`, add a clearer `collect`, or provide `collect` as the
-   friendly command with `grid` retained as an advanced alias.
-2. Use Nominatim directly for named-area resolution, support a provider interface from
-   day one, or implement another resolver. Provider usage policy, caching, attribution,
-   and failure behavior must be reviewed before adoption.
-3. Default boundary buffer and whether it changes by locality type.
-4. Automatic cell-size policy and pre-run workload thresholds for cities, states, and
-   countries.
-5. Deterministic ordering used by `--max-contacts` (discovery order, rating/reviews, or
-   another documented policy).
-6. Default contact budget: off unless requested, a small safe default, or inherited from
-   an explicit `--contacts` flag.
-7. Scope and packaging of the agent-facing skill/MCP changes.
+1. `collect` is the friendly comprehensive command; `grid` remains the advanced
+   coordinate/bbox interface and ordinary natural-language `search` remains unchanged.
+2. Named locations resolve once per new run through Nominatim with a project-specific
+   User-Agent. The resolved display name, provider ID, bbox, and GeoJSON geometry are
+   stored in the checkpoint/manifest, so resume does not geocode again.
+3. Named runs use the exact Polygon/MultiPolygon when available and fall back to the
+   resolver bbox. There is no hidden boundary buffer.
+4. Cell size is selected from a bounded set to target at most roughly 120 cells; callers
+   can override it explicitly.
+5. Contact candidates are deterministic: query match in name/categories first, then
+   review count descending, name, and stable identifier. `--max-contacts N` counts
+   eligible website attempts.
+6. Contacts remain opt-in. Supplying `--max-contacts` enables the phase; records beyond
+   the budget remain in output with `not_attempted_limit`.
+7. The CLI and MCP both expose named-location collection, durable output, resume, and
+   the contact-attempt limit. `AGENTS.md` leads with natural locations, not coordinates.
 
-## Implementation gate
+## Implemented regression-tested slices
 
-No large workflow change should begin until the supplied reference set is complete
-enough for the user to approve the public seams above. Once approved, implementation
-should proceed in vertical regression-tested slices:
-
-1. Location resolution and manifest contract.
-2. Boundary filtering and honest completeness accounting.
-3. Incremental output, checkpoint, interruption, and resume.
-4. Progress and workload estimation.
-5. Bounded staged enrichment with `--max-contacts`.
-6. Contact precision and provenance.
-7. Python/MCP/agent documentation parity and live regression testing.
+- Named-location resolution, exact geometry filtering, automatic grid sizing, and a
+  machine-readable manifest.
+- Honest completeness accounting: caps, cell failures/unprocessed cells, duplicates,
+  and outside-boundary counts.
+- Incremental JSONL records, atomic checkpoints/snapshots, full-record resume, and
+  staged enrichment/contact checkpoints.
+- Human progress on stderr and agent-readable result/manifest files.
+- Contact attempt limits, deterministic selection/statuses, email precision hardening,
+  social extraction, and per-value source-page provenance.
+- Backward-compatible `search`, `grid`, and `SearchAPI.grid_search()` behavior.

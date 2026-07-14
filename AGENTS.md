@@ -10,8 +10,10 @@ internal APIs. No official API key. No browser automation. Pure HTTP with the
 `pb=` protobuf URL parameter protocol.
 
 **If you're an AI agent and a user asks you to:**
-- "Find all coffee shops in Austin" → use `gmaps search "coffee" --lat 30.27 --lng -97.74`
-- "Scrape 1000 HVAC businesses in NYC" → use `gmaps grid "hvac" --bbox 40.4,-74.3,40.9,-73.6 --cell-size 0.5`
+- "Find coffee shops in Austin" → use `gmaps search "coffee shops in Austin"`
+- "Comprehensively scrape chiropractors in Atlanta" → use `gmaps collect "chiropractors" --location "Atlanta, Georgia" -o atlanta.json`
+- "Scrape at most 20 business websites for contacts" → add `--max-contacts 20`
+- Use `gmaps grid ... --bbox ...` only when an advanced caller already has an exact boundary.
 - "Get details for this place" → use `gmaps place ChIJ... --enrich`
 - "Modify the scraper" → read the sections below
 
@@ -21,7 +23,7 @@ internal APIs. No official API key. No browser automation. Pure HTTP with the
 
 ```bash
 cd gmaps-scraper
-python -m pytest tests/ -q          # should show 241 passed
+python -m pytest tests/ -q          # should show 266 passed
 python -c "import gmaps; print('OK')" # should print OK
 ```
 
@@ -37,7 +39,7 @@ GMapsClient (client.py)          ← entry point, 3 modes
   │     ├── places()             ← /search?tbm=map
   │     ├── place_details()      ← /maps/preview/place
   │     └── grid_search()        ← grid subdivision for area coverage
-  └── Parser (rpc/parser.py)     ← 47 fields → 8 grouped JSON objects
+  └── Parser (rpc/parser.py)     ← 58 fields → 8 grouped JSON objects
 ```
 
 Three operating modes:
@@ -166,7 +168,7 @@ These change when Google updates their API. Last verified: 2026-07-01.
 |------|--------------|
 | `src/gmaps/client.py` | `GMapsClient` — main entry, 3 modes, `enrich()` method |
 | `src/gmaps/_search.py` | `SearchAPI` — search, place_details, grid_search, pagination |
-| `src/gmaps/rpc/parser.py` | `ParsedPlace` (47 fields), all extraction logic, `to_dict()` |
+| `src/gmaps/rpc/parser.py` | `ParsedPlace` (58 fields), all extraction logic, `to_dict()` |
 | `src/gmaps/rpc/decoder.py` | Anti-XSSI stripping, JSON/HTML detection |
 | `src/gmaps/transport.py` | HTTP client, UA rotation, jitter, retries |
 | `src/gmaps/grid.py` | `BoundingBox`, `GridCell`, `generate_cells()` |

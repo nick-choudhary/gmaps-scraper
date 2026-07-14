@@ -33,6 +33,11 @@ class ParsedPlace:
     plus_code: str = ""
     emails: list[str] = field(default_factory=list)  # from website extraction
     social_links: dict[str, str] = field(default_factory=dict)  # platform -> URL
+    contact_status: str = ""
+    contact_error: str = ""
+    contact_pages: list[str] = field(default_factory=list)
+    contact_sources: dict[str, dict[str, str]] = field(default_factory=dict)
+    contact_attempted_at: str = ""
 
     # -- Address --
     address: str = ""
@@ -55,6 +60,7 @@ class ParsedPlace:
     # -- Location --
     latitude: float | None = None
     longitude: float | None = None
+    found_in_cells: list[str] = field(default_factory=list)
 
     # -- Business details --
     categories: list[str] = field(default_factory=list)
@@ -63,6 +69,9 @@ class ParsedPlace:
     timezone: str = ""
     status: str = ""
     description: str = ""
+    enrichment_status: str = ""
+    enrichment_error: str = ""
+    enrichment_attempted_at: str = ""
 
     # -- Media --
     photos: list[dict[str, Any]] = field(default_factory=list)
@@ -99,7 +108,19 @@ class ParsedPlace:
         for group, keys in [
             (
                 "contact",
-                ["phone", "website", "google_maps_url", "plus_code", "emails", "social_links"],
+                [
+                    "phone",
+                    "website",
+                    "google_maps_url",
+                    "plus_code",
+                    "emails",
+                    "social_links",
+                    "contact_status",
+                    "contact_error",
+                    "contact_pages",
+                    "contact_sources",
+                    "contact_attempted_at",
+                ],
             ),
             (
                 "address",
@@ -125,7 +146,7 @@ class ParsedPlace:
                     "price_level",
                 ],
             ),
-            ("location", ["latitude", "longitude"]),
+            ("location", ["latitude", "longitude", "found_in_cells"]),
             (
                 "business",
                 [
@@ -135,6 +156,9 @@ class ParsedPlace:
                     "timezone",
                     "status",
                     "description",
+                    "enrichment_status",
+                    "enrichment_error",
+                    "enrichment_attempted_at",
                     "quick_amenities",
                 ],
             ),
@@ -158,6 +182,34 @@ class ParsedPlace:
         if self.is_ad:
             result["is_ad"] = True
         return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ParsedPlace:
+        """Restore a place from the canonical grouped JSON representation.
+
+        This is the inverse of :meth:`to_dict` and is used by durable/resumable
+        collection workflows. Unknown future fields are ignored so old
+        checkpoints remain readable after additive schema changes.
+        """
+        place = cls()
+        grouped = {
+            "contact",
+            "address",
+            "rating",
+            "location",
+            "business",
+            "media",
+            "amenities",
+        }
+        for key, value in data.items():
+            if key in grouped and isinstance(value, dict):
+                for child_key, child_value in value.items():
+                    attribute = "address" if key == "address" and child_key == "full" else child_key
+                    if hasattr(place, attribute) and attribute != "raw":
+                        setattr(place, attribute, child_value)
+            elif hasattr(place, key) and key != "raw":
+                setattr(place, key, value)
+        return place
 
 
 # Field index constants — reverse-engineered from network traffic

@@ -152,7 +152,63 @@ Google's `[203]` format: `[203][0]` contains per-day entries: `['Wednesday', 3, 
 - References currently include Apify's article/current Actor/video, gosom at `0ef302e`, GoogleMapsCollector at `d1edca9`, and local Atlanta evidence.
 - Leading combined direction: Apify's separate what/where UX, GoogleMapsCollector's named-area resolution/filtering/incremental records, gosom's agent workflow, and this project's pure-HTTP/contact architecture.
 - Added requirement: `--max-contacts N` limits contact-enrichment attempts, not discovered places or total emails.
-- Implementation is intentionally gated until the user finishes supplying references and approves the public behavior seams.
+- The user confirmed the supplied references were the complete baseline; the public
+  behavior seams were then implemented in regression-tested slices.
+
+### Complete-scrape corrections implemented
+
+- Added `gmaps collect "query" --location "Place"` as the primary comprehensive UX;
+  ordinary natural-language `search` remains unchanged and bbox/grid inputs remain
+  available for advanced callers.
+- Nominatim now resolves the named location to a persisted display name, provider ID,
+  bbox, center, and Polygon/MultiPolygon. Results are filtered against exact geometry
+  where available, with bbox fallback.
+- Added automatic grid sizing, stable cell keys, full-record JSONL checkpoints, atomic
+  snapshots/state, resume, and a machine-readable manifest.
+- Completeness is explicit: a result cap, failed cells, or unprocessed cells produce
+  `complete: false` with reasons. Saturated 120-result cells are also flagged rather
+  than presented as complete. Duplicate, provenance, boundary rejection, cell, and
+  phase counts are reported separately.
+- Added `--max-contacts` to `search`, `grid`, and `collect`. It limits eligible website
+  attempts, uses deterministic review/name/ID ordering, and leaves all map records in
+  output with structured statuses.
+- Hardened email precision against URL-encoded artifacts, placeholder domains, and
+  unrelated custom domains. Email/social values now retain their source page.
+- Added MCP `collect` parity for agents and updated `AGENTS.md` to lead with human place
+  names rather than latitude/longitude.
+
+### Live smoke evidence
+
+Command:
+
+```powershell
+gmaps collect "chiropractors" --location "Atlanta, Georgia" --cell-size 100 `
+  --max-results 10 --enrich --max-contacts 2 -o C:\tmp\gmaps-atlanta-smoke.json
+```
+
+Observed: 10 retained and enriched businesses, exactly two website attempts, valid
+emails plus Facebook/Instagram profiles with source pages, no errors, and an honest
+`incomplete` manifest with `result_cap_reached`.
+
+Comprehensive 5 km Atlanta run:
+
+- 25/25 cells completed in 18m41s with zero cell failures and no result cap.
+- 368 in-bbox records retained and enriched; 305 explicitly had a chiropractic
+  category. Google spillover filtering rejected 328 records and deduplication removed
+  2,303 repeats.
+- Exactly 20 websites were attempted: five returned emails and seven returned social
+  profiles. The reproduced malformed/placeholder/unrelated-domain emails were absent.
+- The first live ordering used review count alone and exposed related high-review
+  businesses in the contact budget. Ordering was corrected to prefer query matches in
+  name/categories, then review count/name/ID.
+
+Final exact-geometry smoke:
+
+- Nominatim returned Atlanta as a `MultiPolygon`; it was persisted and used for result
+  filtering.
+- A three-contact budget selected businesses categorized as chiropractors. Two yielded
+  validated email/social data and one protected franchise site failed transparently.
+- The 20-result cap correctly produced `incomplete: result_cap_reached`.
 
 ---
 
@@ -175,7 +231,7 @@ Google's `[203]` format: `[203][0]` contains per-day entries: `['Wednesday', 3, 
 │                   │                       │
 │  ┌────────────────┴────────────────────┐ │
 │  │          Parser (parser.py)          │ │
-│  │  47 fields → 8 grouped JSON objects  │ │
+│  │  58 fields → 8 grouped JSON objects  │ │
 │  └─────────────────────────────────────┘ │
 └─────────────────────────────────────────┘
 ```
@@ -184,7 +240,7 @@ Google's `[203]` format: `[203][0]` contains per-day entries: `['Wednesday', 3, 
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `rpc/parser.py` | 667 | Field extraction (47 fields, 8 groups) |
+| `rpc/parser.py` | grouped field extraction (58 fields, 8 groups) |
 | `_search.py` | 422 | Search + place_details + grid_search |
 | `transport.py` | 452 | HTTP with anti-detection |
 | `client.py` | 195 | GMapsClient orchestrator (3 modes) |

@@ -16,7 +16,7 @@ Update this file after every meaningful implementation change.
 - [x] Cookie consent flow (NID/AEC/SOCS, no login)
 - [x] Search API (`/search?tbm=map&pb=...`) with verified pb= format
 - [x] Response decoder (anti-XSSI, JSON/HTML detection, blocked page detection)
-- [x] Parser with 47 fields, 8 grouped JSON output categories
+- [x] Parser with 58 fields, 8 grouped JSON output categories
 - [x] Grid subdivision (`BoundingBox`, `GridCell`, `generate_cells()`)
 - [x] Pagination within cells (`places_paginated`, 6 pages × 20 = 120 per cell)
 
@@ -141,8 +141,16 @@ Update this file after every meaningful implementation change.
 
 ## In Progress
 
-- [ ] Complete-scrape product hardening is in research/contract phase. Source-pinned findings and the reproduced Atlanta baseline are recorded in `docs/references/google-maps-scraper-benchmark.md`.
-- [ ] Await remaining user references and approval of public seams before implementation: named-location collection, honest completeness/boundary reporting, durable resume, progress, staged enrichment, `--max-contacts`, and contact precision.
+- [x] Reference benchmark completed and pinned in `docs/references/google-maps-scraper-benchmark.md`.
+- [x] Friendly `collect --location` workflow with exact resolved geometry, automatic grid sizing, and advanced bbox compatibility.
+- [x] Honest completeness/boundary reporting, durable JSONL/checkpoint/snapshot resume, staged enrichment, and progress/manifest output.
+- [x] `--max-contacts` website-attempt budget, deterministic ordering/statuses, email precision fixes, social extraction, and source-page provenance.
+- [x] Agent parity through `AGENTS.md` and the MCP `collect` tool.
+- [x] Live Atlanta validation: 25/25 cells, 368 records enriched, exact 20-contact
+  budget, zero cell failures; exact MultiPolygon filtering verified in a follow-up.
+- [x] Full regression suite and two-axis standards/spec review; all actionable findings
+  corrected. Final result: 266 tests, Ruff clean, package build clean.
+- [x] Implementation committed and ready to push to the public GitHub repository.
 
 ## Next Up
 

@@ -187,6 +187,12 @@ def main(
     is_flag=True,
     help="Visit each business website and extract emails + social media URLs (LinkedIn, Facebook, Instagram, etc.).",
 )
+@click.option(
+    "--max-contacts",
+    type=click.IntRange(min=0),
+    default=None,
+    help="Maximum business websites to attempt (also enables --contacts).",
+)
 @click.option("--cookies", default=None, help="Login cookie string or file path (Mode 3).")
 @click.pass_context
 def search(
@@ -200,6 +206,7 @@ def search(
     fmt: str,
     enrich: bool,
     contacts: bool,
+    max_contacts: int | None,
     cookies: str | None,
 ) -> None:
     """Search for places on Google Maps."""
@@ -221,9 +228,9 @@ def search(
                 for p in places:
                     await client.enrich(p, query=query)
 
-            if contacts:
+            if contacts or max_contacts is not None:
                 click.echo(f"Extracting contacts from {len(places)} websites...", err=True)
-                await client.extract_contacts(places)
+                await client.extract_contacts(places, max_contacts=max_contacts)
 
             _output_places(places, fmt, output, query)
 
@@ -244,6 +251,12 @@ def search(
     is_flag=True,
     help="Visit each business website and extract emails + social media URLs.",
 )
+@click.option(
+    "--max-contacts",
+    type=click.IntRange(min=0),
+    default=None,
+    help="Maximum business websites to attempt (also enables --contacts).",
+)
 @click.option("--cookies", default=None, help="Login cookie string or file path.")
 @click.pass_context
 def grid(
@@ -257,6 +270,7 @@ def grid(
     fmt: str,
     enrich: bool,
     contacts: bool,
+    max_contacts: int | None,
     cookies: str | None,
 ) -> None:
     """Grid search for comprehensive area coverage."""
@@ -287,14 +301,147 @@ def grid(
                 for p in places:
                     await client.enrich(p, query=query)
 
-            if contacts:
+            if contacts or max_contacts is not None:
                 click.echo(f"Extracting contacts from {len(places)} websites...", err=True)
-                await client.extract_contacts(places)
+                await client.extract_contacts(places, max_contacts=max_contacts)
 
             _output_places(places, fmt, output, query)
             click.echo(f"\nGrid: {len(results)} places from {len({c for _, c in results})} cells")
 
     _run_async(_grid())
+
+
+@main.command()
+@click.argument("query")
+@click.option(
+    "--location",
+    help='Human-readable area, for example "Atlanta, Georgia".',
+)
+@click.option(
+    "--bbox",
+    default=None,
+    help="Advanced boundary override: min_lat,min_lon,max_lat,max_lon.",
+)
+@click.option("--cell-size", type=float, default=None, help="Advanced grid cell size in km.")
+@click.option("--max-results", "-n", type=click.IntRange(min=1), default=500)
+@click.option("--output", "-o", default="gmaps-results.json", show_default=True)
+@click.option("--enrich", is_flag=True, help="Fetch detailed Google Maps fields.")
+@click.option("--contacts", is_flag=True, help="Extract emails and social media links.")
+@click.option(
+    "--max-contacts",
+    type=click.IntRange(min=0),
+    default=None,
+    help="Maximum business websites to attempt (also enables --contacts).",
+)
+@click.option("--resume", is_flag=True, help="Continue from the output checkpoint.")
+@click.option("--cookies", default=None, help="Login cookie string or file path.")
+@click.pass_context
+def collect(
+    ctx: click.Context,
+    query: str,
+    location: str | None,
+    bbox: str | None,
+    cell_size: float | None,
+    max_results: int,
+    output: str,
+    enrich: bool,
+    contacts: bool,
+    max_contacts: int | None,
+    resume: bool,
+    cookies: str | None,
+) -> None:
+    """Comprehensively collect businesses from a named place.
+
+    Example: gmaps collect "chiropractors" --location "Atlanta, Georgia"
+    """
+
+    async def _collect() -> None:
+        from .collection import CollectionRunner, CollectionState, CollectionStore, choose_cell_size
+        from .geocoding import NominatimResolver
+        from .grid import BoundingBox
+
+        store = CollectionStore(output)
+        if resume:
+            state = store.load_state()
+            if state.query != query:
+                raise click.UsageError(f"Checkpoint query is {state.query!r}, not {query!r}.")
+        else:
+            if store.output_path.exists() or store.state_path.exists() or store.jsonl_path.exists():
+                raise click.UsageError(
+                    f"Output already exists for {output!r}; use --resume or choose another path."
+                )
+            if bbox:
+                box = BoundingBox.from_string(bbox)
+                resolved_location: dict[str, Any] = {
+                    "query": location or "advanced bounding box",
+                    "display_name": location or "Advanced bounding box",
+                    "provider": "user",
+                    "bbox": {
+                        "min_lat": box.min_lat,
+                        "min_lon": box.min_lon,
+                        "max_lat": box.max_lat,
+                        "max_lon": box.max_lon,
+                    },
+                }
+            else:
+                if not location:
+                    raise click.UsageError("Provide --location, or use the advanced --bbox option.")
+                click.echo(f"Resolving location: {location}", err=True)
+                resolved = await NominatimResolver().resolve(location, language=ctx.obj["lang"])
+                box = resolved.bbox
+                resolved_location = resolved.to_dict()
+
+            chosen_cell_size = cell_size or choose_cell_size(box)
+            state = CollectionState(
+                query=query,
+                location=location or resolved_location["display_name"],
+                bbox={
+                    "min_lat": box.min_lat,
+                    "min_lon": box.min_lon,
+                    "max_lat": box.max_lat,
+                    "max_lon": box.max_lon,
+                },
+                cell_size_km=chosen_cell_size,
+                max_results=max_results,
+                resolved_location=resolved_location,
+                enrich=enrich,
+                contacts=contacts or max_contacts is not None,
+                max_contacts=max_contacts,
+            )
+
+        from .grid import estimate_cell_count
+
+        planned_cells = estimate_cell_count(BoundingBox(**state.bbox), state.cell_size_km)
+        phases = ["discovery"]
+        if state.enrich:
+            phases.append("enrichment")
+        if state.contacts:
+            phases.append(
+                f"contacts (max {state.max_contacts})"
+                if state.max_contacts is not None
+                else "contacts (all eligible websites)"
+            )
+        click.echo(
+            f"Plan: {planned_cells} cells at {state.cell_size_km:g} km; "
+            f"up to ~{planned_cells * 7} Google requests; phases: {', '.join(phases)}",
+            err=True,
+        )
+
+        client = _make_client(ctx, state.enrich, cookies)
+        async with client:
+            runner = CollectionRunner(
+                client=client,
+                store=store,
+                state=state,
+                progress=lambda message: click.echo(message, err=True),
+            )
+            places, manifest = await runner.run()
+
+        click.echo(f"Saved {len(places)} results to {store.output_path}")
+        click.echo(f"Run status: {manifest['status']}")
+        click.echo(f"Manifest: {store.manifest_path}")
+
+    _run_async(_collect())
 
 
 @main.command()

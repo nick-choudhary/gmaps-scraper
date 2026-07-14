@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -26,6 +27,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _place_dedup_key(place: ParsedPlace) -> str:
+    """Use stable identifiers first, with a deterministic fallback."""
+    return (
+        place.place_id
+        or place.hex_id
+        or place.cid
+        or (
+            f"{place.name.casefold()}|{place.address.casefold()}|{place.latitude}|{place.longitude}"
+        )
+    )
+
+
 @dataclass
 class SearchResult:
     """Result from a Google Maps search."""
@@ -36,6 +49,17 @@ class SearchResult:
     pagination_offset: int = 0
     next_offset: int | None = None
     raw: Any = None
+
+
+@dataclass(frozen=True)
+class GridCellProgress:
+    """One successfully completed grid cell and its newly retained places."""
+
+    cell: GridCell
+    index: int
+    total: int
+    new_places: tuple[ParsedPlace, ...]
+    stats: Any
 
 
 class SearchAPI:
@@ -288,6 +312,13 @@ class SearchAPI:
         detect_exhaustion: bool = True,
         stats: Any = None,
         paginate: bool = True,
+        filter_to_bbox: bool = False,
+        boundary_contains: Callable[[float | None, float | None], bool] | None = None,
+        shuffle_cells: bool = True,
+        skip_cell_keys: set[str] | None = None,
+        initial_seen_ids: set[str] | None = None,
+        initial_places: list[ParsedPlace] | None = None,
+        on_cell: Callable[[GridCellProgress], None] | None = None,
     ) -> list[tuple[ParsedPlace, GridCell]]:
         """Search a geographic area by subdividing into grid cells.
 
@@ -305,8 +336,15 @@ class SearchAPI:
         import random
 
         cells = list(cells)
-        random.shuffle(cells)
+        if shuffle_cells:
+            random.shuffle(cells)
         cell_count = len(cells)
+        skipped_keys = skip_cell_keys or set()
+        planned_keys = {cell.key() for cell in cells}
+        resumed_cells = len(skipped_keys & planned_keys)
+        if stats:
+            stats.cells_total = cell_count
+            stats.cells_completed = resumed_cells
         logger.info(
             "Grid search: '%s' across %d cells (%.1f km, zoom %.1f)",
             query,
@@ -316,14 +354,23 @@ class SearchAPI:
         )
 
         all_results: list[tuple[ParsedPlace, GridCell]] = []
-        seen_ids: set[str] = set()
+        seen_ids: set[str] = set(initial_seen_ids or ())
+        seen_places = {_place_dedup_key(place): place for place in initial_places or []}
+        if stats:
+            for place_id in seen_ids:
+                stats.record_unique(place_id)
         consecutive_empty = 0  # track exhaustion
         cells_processed = 0
 
         for i, cell in enumerate(cells):
-            if len(all_results) >= max_results:
+            if cell.key() in skipped_keys:
+                continue
+            if len(seen_ids) >= max_results:
+                if stats:
+                    stats.cap_reached = True
                 break
             if stats and stats.unique_places >= max_results:
+                stats.cap_reached = True
                 break
 
             # Adaptive viewport: match cell size for proper zoom-in
@@ -371,6 +418,7 @@ class SearchAPI:
                         str(e),
                         {"cell": f"({cell.lat:.4f}, {cell.lon:.4f})", "query": query},
                     )
+                    stats.cells_failed += 1
                 logger.warning(
                     "Cell %d/%d failed: %s: %s", i + 1, cell_count, error_type, str(e)[:100]
                 )
@@ -378,19 +426,54 @@ class SearchAPI:
                 continue
 
             cells_processed += 1
+            if stats:
+                stats.cells_completed += 1
+                if len(result_places) >= self.MAX_PER_AREA:
+                    stats.cells_saturated += 1
 
             new_in_cell = 0
+            retained_in_cell: list[ParsedPlace] = []
             for p in result_places:
-                if dedup and p.place_id:
-                    if p.place_id in seen_ids:
-                        continue
-                    seen_ids.add(p.place_id)
+                inside_boundary = boundary_contains or bbox.contains
+                if filter_to_bbox and not inside_boundary(p.latitude, p.longitude):
                     if stats:
-                        stats.record_unique(p.place_id)
+                        stats.outside_boundary += 1
+                    continue
+                place_key = _place_dedup_key(p)
+                if dedup:
+                    if place_key in seen_ids:
+                        existing = seen_places.get(place_key)
+                        if existing is not None and cell.key() not in existing.found_in_cells:
+                            existing.found_in_cells.append(cell.key())
+                        if stats:
+                            stats.duplicates += 1
+                        continue
+                    seen_ids.add(place_key)
+                    seen_places[place_key] = p
+                    p.found_in_cells.append(cell.key())
+                    if stats:
+                        stats.record_unique(place_key)
                 all_results.append((p, cell))
+                retained_in_cell.append(p)
                 new_in_cell += 1
-                if len(all_results) >= max_results:
+                if len(seen_ids) >= max_results:
+                    if stats:
+                        stats.cap_reached = True
                     break
+
+            if stats and new_in_cell:
+                stats.cells_with_unique += 1
+
+            if on_cell is not None:
+                on_cell(
+                    GridCellProgress(
+                        cell=cell,
+                        index=i + 1,
+                        total=cell_count,
+                        new_places=tuple(retained_in_cell),
+                        stats=stats,
+                    )
+                )
 
             # Exhaustion tracking: skip low-yield cells but DON'T stop.
             # Apify/gosom pattern: search ALL cells, just skip ones that
@@ -430,7 +513,7 @@ class SearchAPI:
             "Grid complete: %d results from %d cells (%.1f%% coverage)",
             len(all_results),
             cells_processed,
-            100 * cells_processed / cell_count if cell_count else 0,
+            100 * (cells_processed + resumed_cells) / cell_count if cell_count else 0,
         )
         return all_results
 
