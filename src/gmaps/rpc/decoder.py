@@ -321,9 +321,19 @@ def decode_response(
         return results
 
     # JSON response
-    cleaned = strip_anti_xssi(text)
+    cleaned = strip_anti_xssi(text).strip()
+    # Pagination responses from the current Maps UI use an XHR wrapper:
+    # {"c": 0, "d": ")]}'\n[...]"}/*""*/
+    # The trailing JavaScript comment is not part of the JSON object.
+    if cleaned.endswith('/*""*/'):
+        cleaned = cleaned[: -len('/*""*/')]
     try:
-        return json.loads(cleaned)
+        decoded = json.loads(cleaned)
+        if isinstance(decoded, dict) and isinstance(decoded.get("d"), str):
+            inner = strip_anti_xssi(decoded["d"]).strip()
+            if inner.startswith(("[", "{")):
+                return json.loads(inner)
+        return decoded
     except json.JSONDecodeError as e:
         raise ParseError(
             f"Failed to parse Google Maps response as JSON: {e}",

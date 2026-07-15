@@ -450,6 +450,18 @@ class TestParseSearchResponse:
         # Only 1 business, not 2 (metadata excluded)
         assert len(places) == 1
 
+    def test_parse_current_maps_ui_envelope(self):
+        legacy = self._make_search_response()
+        place_data = legacy[0][1][1][14]
+        current = [None] * 65
+        current[64] = [["search metadata"], [None, place_data]]
+
+        places = parse_search_response(current)
+
+        assert len(places) == 1
+        assert places[0].name == "Test Coffee Shop"
+        assert places[0].place_id == "ChIJ123456789"
+
     def test_parse_grouped_json(self):
         raw = self._make_search_response()
         places = parse_search_response(raw)

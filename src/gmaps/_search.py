@@ -242,6 +242,10 @@ class SearchAPI:
         radius_meters: int = 5000,
         viewport_dist: float = 10000.0,
         zoom: float = 16.0,
+        stop_seen_ids: set[str] | None = None,
+        boundary_contains: Callable[[float | None, float | None], bool] | None = None,
+        filter_to_boundary: bool = False,
+        on_page: Callable[[SearchResult], None] | None = None,
     ) -> list[ParsedPlace]:
         """Search with automatic pagination to get up to ~120 results.
 
@@ -262,6 +266,7 @@ class SearchAPI:
         all_places: list[ParsedPlace] = []
         offset = 0
         seen_ids: set[str] = set()
+        provisional_global_seen = set(stop_seen_ids or ())
 
         while len(all_places) < max_results and offset < self.MAX_PER_AREA:
             result = await self.places(
@@ -274,20 +279,37 @@ class SearchAPI:
                 viewport_dist=viewport_dist,
                 zoom=zoom,
             )
+            if on_page is not None:
+                on_page(result)
 
             if not result.places:
                 break
 
             new_count = 0
+            new_global_count = 0
             for p in result.places:
-                if p.place_id and p.place_id not in seen_ids:
-                    seen_ids.add(p.place_id)
+                place_key = _place_dedup_key(p)
+                if place_key not in seen_ids:
+                    seen_ids.add(place_key)
                     all_places.append(p)
                     new_count += 1
                     if len(all_places) >= max_results:
                         break
 
+                inside_boundary = boundary_contains or (lambda _lat, _lng: True)
+                if filter_to_boundary and not inside_boundary(p.latitude, p.longitude):
+                    continue
+                if place_key not in provisional_global_seen:
+                    provisional_global_seen.add(place_key)
+                    new_global_count += 1
+
             if new_count == 0:
+                break
+            if stop_seen_ids is not None and new_global_count == 0:
+                logger.debug(
+                    "Pagination stopped at offset %d: page added no globally new places",
+                    offset,
+                )
                 break
 
             offset += self.MAX_PER_PAGE
@@ -325,7 +347,7 @@ class SearchAPI:
         Apify methodology:
         1. Split area into grid cells (mini-maps)
         2. Each cell uses zoom 16 for max pin density
-        3. Paginate through ALL results per cell (up to ~120)
+        3. Paginate while pages add globally new in-boundary results
         4. Search EVERY cell — never stop early
         5. Deduplicate by place_id across all cells
         """
@@ -378,11 +400,19 @@ class SearchAPI:
             search_radius = int(cell_size_km * 750)
 
             try:
-                if stats:
-                    stats.record_request()
-
                 if paginate:
-                    # Apify method: paginate through all ~120 results per cell
+                    pages_observed = 0
+
+                    def observe_page(page: SearchResult) -> None:
+                        nonlocal pages_observed
+                        pages_observed += 1
+                        if stats:
+                            stats.record_request()
+                            stats.record_success(len(page.places))
+
+                    # Search deeper only while each page contributes at least
+                    # one globally new in-boundary business. This preserves
+                    # coverage without blindly replaying duplicate-heavy pages.
                     cell_places = await self.places_paginated(
                         query=query,
                         latitude=cell.lat,
@@ -391,12 +421,20 @@ class SearchAPI:
                         radius_meters=search_radius,
                         viewport_dist=cell_diag_m,
                         zoom=zoom,
+                        stop_seen_ids=seen_ids if dedup else None,
+                        boundary_contains=boundary_contains or bbox.contains,
+                        filter_to_boundary=filter_to_bbox,
+                        on_page=observe_page,
                     )
                     result_places = cell_places
-                    if stats:
+                    if stats and pages_observed == 0:
+                        # Test doubles and third-party subclasses may override
+                        # places_paginated without invoking the page observer.
+                        stats.record_request()
                         stats.record_success(len(result_places))
-                        stats.total_requests += len(result_places) // self.MAX_PER_PAGE
                 else:
+                    if stats:
+                        stats.record_request()
                     result = await self.places(
                         query=query,
                         latitude=cell.lat,
@@ -561,10 +599,15 @@ def _build_search_url(
     - !1d{viewport_dist}: Viewport extent in meters. Should match
       cell_size_km * 500-1000 for grid searches.
     - !7i{count}!8i{offset}: Pagination (20 per page, offset in 20s).
-    - !74i{radius}: Search radius in meters.
+    The current UI request does not expose a strict radius field. Geographic
+    enforcement remains client-side through the resolved location boundary.
     """
-    enc = quote(query)
+    enc = quote(query, safe="")
     q_param = enc.replace("%20", "+")
+    # Google Maps' visible URL zoom and its internal search-request zoom use
+    # different scales. A 16z map emitted 13.1 in verified July 2026 traffic.
+    protocol_zoom = max(0.0, zoom - 2.9)
+    offset_field = f"!8i{offset}" if offset else ""
 
     return (
         "https://www.google.com/search"
@@ -572,15 +615,43 @@ def _build_search_url(
         f"&q={q_param}"
         f"&pb=!1s{enc}"
         f"!4m8!1m3!1d{viewport_dist}!2d{lng}!3d{lat}"
-        f"!3m2!1i1024!2i768!4f{zoom}"
-        f"!7i{count}!8i{offset}"
+        f"!3m2!1i1024!2i768!4f{protocol_zoom:g}"
+        f"!7i{count}{offset_field}"
         f"!10b1"
-        "!12m50!1m5!18b1!30b1!31m1!1b1!34e1"
+        "!12m53!1m5!18b1!30b1!31m1!1b1!34e1"
         "!2m4!5m1!6e2!20e3!39b1"
-        f"!6m23!49b1!63m0!66b1!74i{radius}"
-        "!85b1!91b1!114b1!149b1!206b1!209b1!212b1!213b1"
-        "!223b1!232b1!233b1!234b1!244b1!246b1!250b1!253b1"
-        "!258b1!260b1!263b1"
+        "!6m25!32i1!49b1!63m0!66b1!85b1!114b1!149b1!206b1"
+        "!209b1!212b1!216b1!222b1!223b1!232b1!234b1!235b1"
+        "!239b1!246b1!253b1!260b1!266b1!270b1!273b1!280b1!291m0"
         "!10b1!12b1!13b1!14b1!16b1"
-        "!17m1!3e1!20m3!5e2!6b1!14b1!46m1!1b0!96b1!99b1"
+        "!17m1!3e1!20m4!5e2!6b1!8b1!14b1!46m1!1b0!96b1!99b1"
+        "!19m4!2m3!1i360!2i120!4i8"
+        "!20m57!2m2!1i203!2i100!3m2!2i4!5b1"
+        "!6m6!1m2!1i86!2i86!1m2!1i408!2i240"
+        "!7m33!1m3!1e1!2b0!3e3!1m3!1e2!2b1!3e2!1m3!1e2!2b0!3e3"
+        "!1m3!1e8!2b0!3e3!1m3!1e10!2b0!3e3!1m3!1e10!2b1!3e2"
+        "!1m3!1e10!2b0!3e4!1m3!1e9!2b1!3e2!2b1!9b0"
+        "!15m8!1m7!1m2!1m1!1e2!2m2!1i195!2i195!3i20"
+        "!24m107!1m25!13m9!2b1!3b1!4b1!6i1!8b1!9b1!14b1!20b1!25b1"
+        "!18m14!3b1!4b1!5b1!6b1!13b1!14b1!17b1!21b1!22b1!32b1"
+        "!33m1!1b1!34b1!36e2!10m1!8e3!11m1!3e1!17b1"
+        "!20m2!1e3!1e6!24b1!25b1!26b1!27b1!29b1!30m1!2b1!36b1!37b1"
+        "!39m3!2m2!2i1!3i1!43b1!52b1!54m1!1b1!55b1!56m1!1b1"
+        "!61m2!1m1!1e1!65m5!3m4!1m3!1m2!1i224!2i298"
+        "!72m22!1m8!2b1!5b1!7b1!12m4!1b1!2b1!4m1!1e1!4b1"
+        "!8m10!1m6!4m1!1e1!4m1!1e3!4m1!1e4"
+        "!3sother_user_google_review_posts__and__hotel_and_vr_partner_review_posts"
+        "!6m1!1e1!9b1!89b1!90m2!1m1!1e2"
+        "!98m3!1b1!2b1!3b1!103b1!113b1!114m3!1b1!2m1!1b1!117b1"
+        "!122m1!1b1!126b1!127b1!128m1!1b0"
+        "!26m4!2m3!1i80!2i92!4i8"
+        "!30m28!1m6!1m2!1i0!2i0!2m2!1i530!2i768"
+        "!1m6!1m2!1i974!2i0!2m2!1i1024!2i768"
+        "!1m6!1m2!1i0!2i0!2m2!1i1024!2i20"
+        "!1m6!1m2!1i0!2i748!2m2!1i1024!2i768"
+        "!34m19!2b1!3b1!4b1!6b1!8m6!1b1!3b1!4b1!5b1!6b1!7b1"
+        "!9b1!12b1!14b1!20b1!23b1!25b1!26b1!31b1!37m1!1e81!42b1"
+        "!49m10!3b1!6m2!1b1!2b1!7m2!1e3!2b1!8b1!9b1!10e2"
+        "!50m3!2e2!3m1!3b1!61b1!67m5!7b1!10b1!14b1!15m1!1b0"
+        "!69i786!77b1"
     )
