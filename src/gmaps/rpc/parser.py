@@ -336,12 +336,57 @@ REVIEW_TEXT_VALUE_CONTAINER_INDEX = 0
 REVIEW_TEXT_VALUE_INDEX = 0
 
 
+def _search_place_data_entries(raw_data: list[Any]) -> list[tuple[list[Any], list[Any]]]:
+    """Return place-data records from legacy and current Maps search envelopes."""
+    legacy_results: Any = []
+    try:
+        envelope = raw_data[SEARCH_ENVELOPE_INDEX]
+        if isinstance(envelope, list):
+            legacy_results = envelope[SEARCH_RESULTS_INDEX]
+    except (IndexError, TypeError):
+        pass
+
+    legacy_entries: list[tuple[list[Any], list[Any]]] = []
+    if isinstance(legacy_results, list):
+        for entry in legacy_results[SEARCH_FIRST_BUSINESS_INDEX:]:
+            if (
+                isinstance(entry, list)
+                and len(entry) > SEARCH_ENTRY_PLACE_DATA_INDEX
+                and isinstance(entry[SEARCH_ENTRY_PLACE_DATA_INDEX], list)
+            ):
+                legacy_entries.append((entry, entry[SEARCH_ENTRY_PLACE_DATA_INDEX]))
+    if legacy_entries:
+        return legacy_entries
+
+    # Current Maps UI responses (July 2026) expose organic results as a
+    # top-level result container whose entries are [metadata, place_data].
+    # Locate it structurally so a shifting top-level index does not break us.
+    for container in raw_data:
+        if not isinstance(container, list):
+            continue
+        current_entries: list[tuple[list[Any], list[Any]]] = []
+        for entry in container:
+            if not isinstance(entry, list) or len(entry) < 2:
+                continue
+            place_data = entry[1]
+            if (
+                isinstance(place_data, list)
+                and len(place_data) > F_ADDRESS
+                and isinstance(place_data[F_NAME], str)
+                and isinstance(place_data[F_ADDRESS], str)
+            ):
+                current_entries.append((entry, place_data))
+        if current_entries:
+            return current_entries
+
+    return []
+
+
 def parse_search_response(raw_data: Any) -> list[ParsedPlace]:
     """Parse Google Maps search response into structured place objects.
 
-    The search response has this structure:
-        data[0][1] → array of result entries
-        Each entry: entry[14] → place data
+    Supports both the legacy ``data[0][1][n][14]`` response and the current
+    Maps UI ``[metadata, place_data]`` result-container response.
 
     Args:
         raw_data: Decoded response from anti-XSSI stripping + JSON parse.
@@ -354,37 +399,8 @@ def parse_search_response(raw_data: Any) -> list[ParsedPlace]:
     if not isinstance(raw_data, list):
         return places
 
-    try:
-        # Navigate to results array: data[0][1]
-        results = (
-            raw_data[SEARCH_ENVELOPE_INDEX][SEARCH_RESULTS_INDEX]
-            if len(raw_data) > SEARCH_ENVELOPE_INDEX
-            and isinstance(raw_data[SEARCH_ENVELOPE_INDEX], list)
-            else []
-        )
-    except (IndexError, TypeError) as exc:
-        logger.debug("Malformed search result envelope: %s", exc)
-        return places
-
-    if not isinstance(results, list) or len(results) < 2:
-        return places
-
-    # Skip entry[0] — it's search metadata/suggestion, not a business.
-    # Actual businesses start from index 1.
-    for idx in range(SEARCH_FIRST_BUSINESS_INDEX, len(results)):
-        entry = results[idx]
-        if not isinstance(entry, list):
-            continue
-
+    for entry, place_data in _search_place_data_entries(raw_data):
         place = ParsedPlace(raw=entry)
-
-        # Each business result has place data at index 14
-        if len(entry) <= SEARCH_ENTRY_PLACE_DATA_INDEX:
-            continue
-
-        place_data = entry[SEARCH_ENTRY_PLACE_DATA_INDEX]
-        if not isinstance(place_data, list):
-            continue
 
         # Extract identifiers
         place.name = _safe_str(place_data, F_NAME)

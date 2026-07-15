@@ -34,6 +34,11 @@ class CollectionState:
     completed_cells: set[str] = field(default_factory=set)
     enriched_place_ids: set[str] = field(default_factory=set)
     contact_attempted_place_ids: set[str] = field(default_factory=set)
+    discovery_requests: int = 0
+    raw_occurrences: int = 0
+    duplicate_occurrences: int = 0
+    outside_boundary_occurrences: int = 0
+    saturated_cells: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -62,6 +67,11 @@ class CollectionState:
             completed_cells=set(data.get("completed_cells") or []),
             enriched_place_ids=set(data.get("enriched_place_ids") or []),
             contact_attempted_place_ids=set(data.get("contact_attempted_place_ids") or []),
+            discovery_requests=int(data.get("discovery_requests") or 0),
+            raw_occurrences=int(data.get("raw_occurrences") or 0),
+            duplicate_occurrences=int(data.get("duplicate_occurrences") or 0),
+            outside_boundary_occurrences=int(data.get("outside_boundary_occurrences") or 0),
+            saturated_cells=int(data.get("saturated_cells") or 0),
         )
 
 
@@ -138,7 +148,16 @@ class CollectionStore:
             json.dumps(payload, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-        os.replace(temp_path, path)
+        for attempt in range(6):
+            try:
+                os.replace(temp_path, path)
+                return
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                # Windows readers, antivirus, and sync tools can briefly hold the
+                # destination open. Retrying preserves the atomic replacement.
+                time.sleep(0.05 * (2**attempt))
 
 
 def choose_cell_size(bbox: BoundingBox, target_cells: int = 120) -> float:
@@ -194,6 +213,19 @@ class CollectionRunner:
         self.state = state
         self.progress = progress or (lambda _message: None)
         self.stats = ScraperStats()
+        self.stats.total_requests = state.discovery_requests
+        self.stats.total_places = state.raw_occurrences
+        self.stats.duplicates = state.duplicate_occurrences
+        self.stats.outside_boundary = state.outside_boundary_occurrences
+        self.stats.cells_saturated = state.saturated_cells
+
+    def _sync_discovery_counters(self) -> None:
+        """Persist cumulative discovery accounting for reliable resume reports."""
+        self.state.discovery_requests = self.stats.total_requests
+        self.state.raw_occurrences = self.stats.total_places
+        self.state.duplicate_occurrences = self.stats.duplicates
+        self.state.outside_boundary_occurrences = self.stats.outside_boundary
+        self.state.saturated_cells = self.stats.cells_saturated
 
     async def run(self) -> tuple[list[ParsedPlace], dict[str, Any]]:
         started = time.time()
@@ -210,6 +242,7 @@ class CollectionRunner:
             for place in discovered:
                 by_key[_place_key(place)] = place
             self.state.completed_cells.add(event.cell.key())
+            self._sync_discovery_counters()
             self.store.save_state(self.state)
             self.store.write_manifest(self._manifest("running", by_key, started))
             self.progress(event.stats.progress() if event.stats else "Cell complete")
@@ -242,6 +275,7 @@ class CollectionRunner:
         )
         for place, _cell in results:
             by_key[_place_key(place)] = place
+        self._sync_discovery_counters()
         places = list(by_key.values())
         self.store.write_snapshot(places)
 
@@ -346,6 +380,8 @@ class CollectionRunner:
             },
             "results": {
                 "retained": len(places),
+                "raw_occurrences": self.stats.total_places,
+                "discovery_requests": self.stats.total_requests,
                 "duplicates": self.stats.duplicates,
                 "outside_boundary": self.stats.outside_boundary,
                 "cap_reached": self.stats.cap_reached,

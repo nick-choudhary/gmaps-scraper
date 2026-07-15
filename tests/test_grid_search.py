@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from gmaps._search import GridCellProgress, SearchAPI
+from gmaps._search import GridCellProgress, SearchAPI, SearchResult
 from gmaps.grid import BoundingBox, generate_cells
 from gmaps.rpc.parser import ParsedPlace
 from gmaps.stats import ScraperStats
@@ -20,6 +20,63 @@ class FakeGridSearchAPI(SearchAPI):
 
     async def places_paginated(self, **kwargs: Any) -> list[ParsedPlace]:
         return next(self._pages)
+
+
+class FakePageAPI(SearchAPI):
+    def __init__(self, pages: list[list[ParsedPlace]]) -> None:
+        super().__init__(transport=None)  # type: ignore[arg-type]
+        self._pages = iter(pages)
+        self.calls = 0
+        self._request_delay = 0
+
+    async def places(self, **kwargs: Any) -> SearchResult:
+        self.calls += 1
+        places = next(self._pages)
+        return SearchResult(query="test", places=places)
+
+
+@pytest.mark.asyncio
+async def test_pagination_stops_when_page_adds_nothing_globally_new() -> None:
+    api = FakePageAPI(
+        [
+            [ParsedPlace(place_id="new", latitude=1.0, longitude=1.0)],
+            [ParsedPlace(place_id="already-seen", latitude=1.0, longitude=1.0)],
+            [ParsedPlace(place_id="must-not-be-requested", latitude=1.0, longitude=1.0)],
+        ]
+    )
+
+    places = await api.places_paginated(
+        "test",
+        latitude=1.0,
+        longitude=1.0,
+        stop_seen_ids={"already-seen"},
+        boundary_contains=lambda _lat, _lng: True,
+        filter_to_boundary=True,
+    )
+
+    assert api.calls == 2
+    assert [place.place_id for place in places] == ["new", "already-seen"]
+
+
+@pytest.mark.asyncio
+async def test_outside_place_does_not_keep_global_pagination_running() -> None:
+    api = FakePageAPI(
+        [
+            [ParsedPlace(place_id="outside", latitude=5.0, longitude=5.0)],
+            [ParsedPlace(place_id="must-not-be-requested", latitude=1.0, longitude=1.0)],
+        ]
+    )
+
+    await api.places_paginated(
+        "test",
+        latitude=1.0,
+        longitude=1.0,
+        stop_seen_ids=set(),
+        boundary_contains=lambda lat, lng: lat == 1.0 and lng == 1.0,
+        filter_to_boundary=True,
+    )
+
+    assert api.calls == 1
 
 
 @pytest.mark.asyncio

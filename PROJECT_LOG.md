@@ -210,6 +210,129 @@ Final exact-geometry smoke:
   validated email/social data and one protected franchise site failed transparently.
 - The 20-result cap correctly produced `incomplete: result_cap_reached`.
 
+### Apify mini-map gap and duplicate diagnosis
+
+The first comprehensive collector implemented the outer grid pattern but not the
+efficient mini-map scheduling policy described by Apify. In particular,
+`grid_search()` paginates every fixed cell toward Google's approximate 120-result
+area cap. The 5 km Atlanta run consequently processed 2,999 raw result occurrences
+to retain 368 unique in-boundary places: 2,303 duplicate encounters and 328
+out-of-boundary results. Nearly every cell reached the 120-result ceiling.
+
+Page-level diagnostics showed that the first tested Atlanta cell supplied 82 of 91
+unique results found across four cells. The following 18 page requests added only
+nine globally new places. Reducing the encoded radius and viewport did not
+materially change the ranking, so those fields must not be treated as a strict
+mini-map boundary. Stopping after two duplicate-only pages is also unsafe: later
+pages occasionally added a unique result.
+
+Apify's documented technique is: keep the search term and location separate,
+resolve the location geometry, split it into mini-maps, choose a dense zoom for
+each mini-map (usually 16), scrape each mini-map, and combine the results. The
+article explicitly notes that grids require one page per mini-map and can therefore
+be slow. It does not prescribe six pages from every fixed cell. The gosom reference
+provides a concrete open-source variant: small grid cells, one 20-result map page,
+and strict client-side spatial filtering.
+
+Production correction decided:
+
+- Preserve the pure-HTTP transport, parser, enrichment, contact extraction,
+  checkpoints, natural-language location UX, and canonical output.
+- Replace fixed-cell deep pagination in comprehensive collection with adaptive
+  mini-map discovery: request one page, accept results only within the target
+  geography, and subdivide/zoom a cell when that page is full.
+- Stop sparse leaf cells immediately; continue splitting dense cells until the page
+  is no longer full or an explicit depth/minimum-size safety limit is reached.
+- Record parent/leaf cells, saturation, subdivision, raw occurrences, duplicates,
+  boundary rejections, and unique yield per request in the manifest. Any saturated
+  terminal leaf must keep `complete: false`.
+- Benchmark the new scheduler against the 305 explicitly chiropractic-category
+  Atlanta baseline. The acceptance criterion is at least 2x unique relevant places
+  per discovery request without losing that baseline, with no false completeness
+  claim. This is a measured target, not an assumed result.
+
+#### Adaptive mini-map experiment rejected
+
+The proposed scheduler was implemented behind an experimental search method and
+temporarily connected to `collect` for live validation. It used gosom's one-page
+request shape, a full-page subdivision signal, and exact location-boundary
+filtering. Two interpretations were tested:
+
+1. Strict per-mini-map footprint filtering retained only 28 of 900 raw occurrences
+   in a bounded Atlanta test; 846 were outside the nominal mini-map. This proved
+   that Google's returned ranking is much broader than the assumed cell square.
+2. Boundary-only retention preserved recall locally, but the city-wide one-level
+   A/B still underperformed the existing collector: 125 requests, 2,500 raw
+   occurrences, 171 retained businesses, 151 explicitly chiropractic-category,
+   1,153 duplicate encounters, and 1,176 outside Atlanta. The prior baseline
+   retained 368 businesses, including 305 explicitly chiropractic-category, at
+   roughly the same discovery-request scale.
+
+Conclusion: the tested mini-map variant reduces duplicate counts only by losing
+about half the relevant records. It fails the acceptance criterion and must not
+replace production collection. `collect` was restored to the existing validated
+grid/pagination path. The experiment demonstrates that Apify's public article
+describes the high-level grid/zoom concept but does not disclose enough scheduling
+or request-protocol detail to reproduce its completeness claims directly.
+
+A separate Windows durability issue was reproduced when a reader briefly held the
+manifest destination open during atomic replacement. Atomic snapshot/manifest
+writes now retry transient `PermissionError` failures with bounded exponential
+backoff; this correction is independent of the rejected discovery experiment.
+
+#### Current Maps UI protocol capture and production correction (2026-07-14)
+
+The rejected mini-map experiment was using the project's older search request
+shape. A diagnostic browser capture (not retained as a runtime dependency) proved
+that the current Google Maps UI sends a materially different pure-HTTP
+`/search?tbm=map` payload:
+
+- A visible `16z` map emits internal search zoom `13.1`.
+- Organic results use a current envelope whose place records are structurally
+  `[metadata, place_data]` in a top-level result container (observed at index 64),
+  rather than only the legacy `data[0][1][n][14]` envelope.
+- Offset pages are wrapped as `{"c": 0, "d": ")]}'\n[...]"}/*""*/`.
+- The request works through a fresh project HTTP session without browser cookies,
+  browser headers, Playwright, or an API key. Browser automation was diagnostic
+  only; production remains pure HTTP.
+
+The decoder now unwraps current offset responses, the parser accepts both current
+and legacy envelopes, and the request builder uses the verified current UI field
+set while preserving the user-facing zoom scale. A live downtown Atlanta CLI
+search returned 20 businesses with a 2.67 km median distance and 4.18 km maximum
+distance. Two Atlanta centers returned 66 unique businesses from 78 unique
+first-two-page records, with 12 overlapping IDs (31.6% overlap).
+
+Complete 72-cell Atlanta scheduler benchmarks, all error-free:
+
+| Policy | Requests | Raw | Retained | Chiropractic category | Duplicates | Outside |
+|---|---:|---:|---:|---:|---:|---:|
+| One page per cell | 72 | 1,440 | 203 | 190 | 1,024 | 213 |
+| Two pages per cell | 144 | 2,880 | 270 | 244 | 2,071 | 539 |
+| Stop immediately at <=1 new/page | 124 | 2,478 | 322 | 286 | 1,595 | 561 |
+| Stop at zero globally new/page | 167 | 3,338 | 381 | 330 | 2,145 | 812 |
+| Same policy, four-page ceiling | 154 | 3,079 | 334 | 295 | 2,056 | 689 |
+| Two consecutive <=1-new pages | 209 | 4,178 | 396 | 339 | 2,780 | 1,002 |
+
+The 305 explicitly chiropractic-category baseline is the recall floor. One/two
+fixed pages, the aggressive low-yield stop, and the four-page ceiling were rejected
+because they fell below it. The two-strike policy was rejected because it exceeded
+the old duplicate and request cost. Production now uses the only tested policy that
+clears the floor without regressing duplicate count: paginate a mini-map while each
+page contributes at least one globally new in-boundary business, and stop that cell
+on the first zero-new page, retaining the six-page safety ceiling.
+
+Compared with the old full run, the selected policy increased explicitly relevant
+coverage from 305 to 330, reduced duplicate encounters from 2,303 to 2,145, and
+reduced duplicate share from 76.8% (2,303/2,999) to 64.3% (2,145/3,338). It used
+167 requests versus roughly 150 actual old discovery requests. This is a measured
+improvement, not a claim that duplicates can be eliminated: overlapping mini-maps
+necessarily repeat businesses, and the manifest continues to expose exact raw,
+duplicate, boundary, request, saturation, and completeness counters.
+Discovery request, raw-occurrence, duplicate, boundary-rejection, and saturation
+counters are stored in the checkpoint and restored on `--resume`, so a resumed
+manifest reports the whole run rather than only the final process.
+
 ---
 
 ## Architecture Summary

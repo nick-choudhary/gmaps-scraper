@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -57,6 +59,25 @@ def test_snapshot_is_atomic_canonical_json_and_becomes_resume_source(tmp_path) -
     assert [item["place_id"] for item in payload] == ["one", "two"]
     assert [p.place_id for p in store.load_places()] == ["one", "two"]
     assert not output.with_suffix(".json.tmp").exists()
+
+
+def test_atomic_snapshot_retries_a_transient_windows_reader_lock(tmp_path) -> None:
+    store = CollectionStore(tmp_path / "results.json")
+    real_replace = os.replace
+    attempts = 0
+
+    def briefly_locked(source, destination) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError("destination is briefly open")
+        real_replace(source, destination)
+
+    with mock.patch("gmaps.collection.os.replace", side_effect=briefly_locked):
+        store.write_manifest({"status": "running"})
+
+    assert attempts == 3
+    assert json.loads(store.manifest_path.read_text(encoding="utf-8")) == {"status": "running"}
 
 
 def test_resume_merges_snapshot_with_records_discovered_after_snapshot(tmp_path) -> None:
@@ -159,6 +180,8 @@ async def test_runner_writes_complete_manifest_and_honors_contact_attempt_cap(tm
 
     assert manifest["status"] == "complete"
     assert manifest["results"]["retained"] == 2
+    assert manifest["results"]["raw_occurrences"] == 2
+    assert manifest["results"]["discovery_requests"] == 1
     assert manifest["results"]["contact_attempted"] == 1
     assert manifest["results"]["enrichment_succeeded"] == 2
     assert manifest["results"]["enrichment_failed"] == 0
@@ -171,3 +194,26 @@ async def test_runner_writes_complete_manifest_and_honors_contact_attempt_cap(tm
         "quiet": "completed",
     }
     assert json.loads(store.manifest_path.read_text(encoding="utf-8"))["complete"] is True
+
+
+def test_checkpoint_round_trip_preserves_discovery_counters() -> None:
+    state = CollectionState(
+        query="coffee",
+        location="Austin, Texas",
+        bbox={"min_lat": 30.0, "min_lon": -98.0, "max_lat": 31.0, "max_lon": -97.0},
+        cell_size_km=3.0,
+        max_results=500,
+    )
+    state.discovery_requests = 17
+    state.raw_occurrences = 340
+    state.duplicate_occurrences = 120
+    state.outside_boundary_occurrences = 30
+    state.saturated_cells = 2
+
+    restored = CollectionState.from_dict(state.to_dict())
+
+    assert restored.discovery_requests == 17
+    assert restored.raw_occurrences == 340
+    assert restored.duplicate_occurrences == 120
+    assert restored.outside_boundary_occurrences == 30
+    assert restored.saturated_cells == 2
