@@ -67,3 +67,15 @@ Thumbs.db
 # Scraped-data dumps (too large for git)
 nyc_restaurants_5k.json
 nyc_restaurants_5k_v2.json
+
+# Collection run outputs (`gmaps collect` writes these) — keep scraped data out of git
+*.jsonl
+*.checkpoint.json
+*.manifest.json
+*.run.log
+
+# Scheduler benchmark outputs (scripts/benchmark_scheduler.py)
+bench/
+
+# Local-only dev scratch (exploratory scripts + captured sample data; not shipped)
+dev_scratch/
