@@ -1,12 +1,19 @@
 # gmaps-scraper
 
-Unofficial Python client for Google Maps using reverse-engineered internal APIs.
+**Google Maps scraper** — an async Python library, CLI, and MCP server that extracts
+structured **Google Maps business data** (names, addresses, phone numbers, websites,
+ratings, reviews, categories, hours) plus **emails and social profiles for lead
+generation** — over **pure HTTP**. No official API key, no Google account login, and no
+browser automation.
 
-**No official API key required. No Google account login required.** Works by
-calling the same internal endpoints that the Google Maps web app uses —
-specifically the `pb=` protobuf parameter protocol.
+It calls the same internal `pb=` protobuf endpoints the Google Maps web app uses, with
+grid / adaptive mini-map search to go beyond the ~120-result-per-view limit, honest
+completeness reporting, optional place-details enrichment, and website contact
+extraction. Use it for local-business lead generation, market research, and data mining.
 
-Built using the same reverse-engineering methodology as
+**No official API key required. No Google account login required.**
+
+Built with the same reverse-engineering methodology as
 [notebooklm-py](https://github.com/teng-lin/notebooklm-py), and the anti-detection
 patterns from [gosom/google-maps-scraper](https://github.com/gosom/google-maps-scraper).
 
