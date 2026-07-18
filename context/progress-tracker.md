@@ -152,12 +152,107 @@ Update this file after every meaningful implementation change.
   corrected. Final result: 266 tests, Ruff clean, package build clean.
 - [x] Implementation committed and ready to push to the public GitHub repository.
 
+## In Progress (2026-07-16)
+
+- [x] **Strategy B adaptive mini-maps for `collect`** — fixed fence; page mild
+  density; if view hits ~120 / 6 full pages → quarter + UI zoom+1; protocol
+  `!4f` fixed at 13.1, densify via `!1d` viewport; cell footprint filter + early
+  stop on zero new locals.
+- [x] **Multi-pass discovery** — phase1 mini-maps; phase2 Nominatim
+  neighborhood/ZIP diversity (`"{query} near {subarea}"`); phase3 gap-fill of
+  uncovered hex centers only. Global place_id dedupe; exact polygon fence.
+- [ ] Full-city multi-pass benchmarks (Austin/Nashville/Atlanta recall gates).
+
+## Discovery-scheduler work (2026-07-17 → 2026-07-18)
+
+Full diagnosis + plan: [discovery-scheduler-plan.md](discovery-scheduler-plan.md).
+
+- [x] **Regression fixed:** restored the `saturated_cells` incompleteness reason in
+  `stats.py` (the uncommitted change had removed it, breaking 2 tests and the
+  "saturated terminal leaf must keep `complete: false`" invariant). 285 tests green,
+  ruff clean.
+- [x] **`scripts/recall_floor.py`** — offline union recall floor + per-run
+  recall/waste table. Empirical floors: atlanta 301 / austin 493 / nashville 249.
+- [x] **`scripts/benchmark_scheduler.py`** — fixed-geometry harness driving the real
+  `CollectionRunner` across policies P0–P4; resolves geometry once so runs are
+  comparable. Exposed `footprint_buffer` knob + `on_footprint_drop` leak hook;
+  added `outside_footprint` to the manifest.
+- [x] **Live Nashville benchmark run** — the lever is **pagination depth**, not the
+  footprint/diversity knobs. Old default `max_pages=2` scored 0.745 recall with 24
+  mislabeled-saturated cells; `max_pages=6` reached **0.941 recall at the same request
+  count** with 2 saturated. Diversity added nothing; depth-2 splitting didn't help;
+  buffer 1.0 cuts duplicates ~80% but costs ~4% relevant recall.
+- [x] **Wired the winner:** `CollectionRunner` mini-map default `max_pages` 2 → 6
+  (recall-positive, ~zero request cost). `footprint_buffer` kept 1.5 (buffer 1.0 is a
+  knob pending Atlanta confirmation). PROJECT_LOG updated with the measured table.
+- [x] **Confirmed on Atlanta (2026-07-18):** `max_pages=6` positive again (P0 0.876 →
+  P5 0.901 recall; never negative). Fix is settled across two cities. **New finding:**
+  on Atlanta `footprint_buffer=1.0` (P7) was strictly better — recall 0.912, duplicates
+  266→128, fewest requests, and the only `complete: True` run (0 saturated). On
+  Nashville the same buffer cost ~4% relevant recall. So buffer 1.0 is a real decision
+  point, not a clear "leave off"; still no policy clears the 2× unique/request gate.
+- [ ] **Decide `footprint_buffer` default** (1.5 vs 1.0) — needs one more city or a
+  values call (max recall vs. much lower duplicates). Left at 1.5 for now.
+
 ## Next Up
 
-1. **Extended reviews (300+)** — paginate `/maps/rpc/listugcposts` beyond current 20-result limit. ~3h.
-2. **Multi-query grid search** — accept list of queries (e.g., `["pizza", "chinese", "italian"]`), each gets own grid sweep, merge+dedup globally. Expected: 8,000-12,000 unique per city. ~2h.
-3. **Concurrent grid cells** — `asyncio.gather` on 4-8 cells simultaneously. 4-8x throughput. ~4h.
-5. **PostgreSQL/S3 output** — for 100k+ scale batch jobs. ~3h.
+1. **Validate Strategy B live** on Atlanta chiropractors.
+2. **Neighborhood/admin-area query sweep** if pure geo mini-maps still re-rank the
+   same city-wide set at every center.
+3. **Extended reviews (300+)** — paginate `/maps/rpc/listugcposts` beyond current 20-result limit.
+4. **Multi-query grid search** — list of queries, merge+dedup globally.
+5. **Concurrent mini-maps** — `asyncio.gather` on 4-8 cells.
+6. **PostgreSQL/S3 output** — for 100k+ scale batch jobs.
+
+## Parked roadmap — "make it a product" (decided 2026-07-18)
+
+Decision: ship the current recall fix first, keep the codebase clean, defer all of
+the below to a later version.
+
+**TOP PRIORITY for next update (user call 2026-07-18):** the geographic-scaling
+roadblock — item "Cell-sizing / scale decomposition" below. It is the gateway to
+country-scale (the north-star feature) and fixes both ZIP over-gridding and
+state/country under-coverage. Do this first next version.
+
+Remaining items ordered by value/effort:
+
+1. **Semantic query expansion** (highest discovery upside, unproven) — search multiple
+   category phrasings (`chiropractor`, `chiropractic clinic`, `sports chiropractor`,
+   `spinal decompression`) and union them. Attacks Google's *ranking* ceiling, not the
+   geography. Geographic subarea diversity already tested and failed; semantic is the
+   promising untested lever. Test on `benchmark_scheduler.py` before adopting.
+2. **Docker + REST API** (high value, low effort) — FastAPI wrapper (POST job / GET
+   status+results; manifest already gives status) + Dockerfile + compose. Our tiny
+   pure-HTTP image (~150 MB) is a real edge over gosom's Playwright+Docker.
+3. **Rotating proxy pool** (unlocks scale) — upgrade single `--proxy` to a
+   health-checked pool with 429 cooldown. Answers the open IP-rate-limit question.
+4. **PostgreSQL + S3 output backends** — generalize `CollectionStore` (already the
+   seam) into pluggable writers; add one at a time.
+5. **Thin WebUI** — last; a form over the REST API + results table + map.
+6. **[TOP PRIORITY] Cell-sizing / scale decomposition** — `choose_cell_size` targets a
+   fixed ~100 cells regardless of area, which **over-grids small areas** (a ZIP →
+   0.5 km / 56 cells though one 6.6 km viewport covers it ~10× over → ~10–14× wasted
+   requests) and **under-covers states** (50 km cells, cell/view 7.5×, rural gaps
+   unsearched). City/metro (cell/view ≈ 0.8–1.2×) is the proven sweet spot that hits
+   0.94 recall. Staged fix, each provable on `benchmark_scheduler.py` before commit:
+   - **6a. Anchor cell size to viewport (~5–6 km), cap the ladder** — reproduces the
+     working city ratio at all scales. LOW RISK (one function, downstream unchanged).
+     Verify on a ZIP: same recall, far fewer requests. Fixes over-gridding.
+   - **6b. Scale guard** — when the anchored cell count is huge (state/country),
+     warn + require confirmation + estimate requests/time. Prevents a 13k-request
+     surprise. Must land WITH 6a.
+   - **6c. Hierarchical decomposition (country north-star)** — for very large areas,
+     decompose admin-wise (country → states → cities/populated places via Nominatim /
+     a populated-places list) and grid only populated areas; skip empty land cheaply.
+     This is what makes "all restaurants in the US" tractable. Requires the proxy pool
+     (item 3), concurrency (Next Up #5), and a real DB backend (item 4) to be viable —
+     it is the capstone that ties the roadmap together, not a standalone change.
+7. **Optional Google/Census geocoder** — Nominatim stays default (only source giving
+   real polygons, which precise fencing depends on). Google Geocoding gives rectangles
+   only + needs a paid key + ToS limits → a downgrade for our filter. US Census
+   TIGER/ZCTA is the better route if we ever want finer ZIP/admin polygons.
+8. **Contact moat deepening** — email verification (MX/SMTP), phone-from-website, more
+   platforms. Already ahead of both references here; this widens the lead.
 
 ## Open Questions
 
