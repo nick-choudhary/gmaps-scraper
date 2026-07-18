@@ -444,9 +444,7 @@ class SearchAPI:
         # those centers returns almost entirely fence-filtered ranking waste.
         if boundary_contains is not None:
             before = len(seed_cells)
-            seed_cells = [
-                cell for cell in seed_cells if boundary_contains(cell.lat, cell.lon)
-            ]
+            seed_cells = [cell for cell in seed_cells if boundary_contains(cell.lat, cell.lon)]
             dropped = before - len(seed_cells)
             if dropped:
                 logger.info(

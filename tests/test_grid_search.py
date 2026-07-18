@@ -273,9 +273,7 @@ def test_viewport_meters_halves_each_ui_zoom_step() -> None:
 @pytest.mark.asyncio
 async def test_minimap_partial_page_is_leaf_one_request() -> None:
     bbox = BoundingBox(0.0, 0.0, 0.01, 0.01)
-    api = FakeMiniMapAPI(
-        [[ParsedPlace(place_id="only", latitude=0.005, longitude=0.005)]]
-    )
+    api = FakeMiniMapAPI([[ParsedPlace(place_id="only", latitude=0.005, longitude=0.005)]])
     stats = ScraperStats()
 
     results = await api.minimap_grid_search(
@@ -307,7 +305,9 @@ async def test_minimap_paginates_full_pages_but_does_not_split_before_120() -> N
         ParsedPlace(place_id=f"b{i}", latitude=0.005, longitude=0.005)
         for i in range(5)  # partial → stop, not saturated
     ]
-    api = FakeMiniMapAPI([page1, page2, [ParsedPlace(place_id="nope", latitude=0.005, longitude=0.005)]])
+    api = FakeMiniMapAPI(
+        [page1, page2, [ParsedPlace(place_id="nope", latitude=0.005, longitude=0.005)]]
+    )
     stats = ScraperStats()
 
     results = await api.minimap_grid_search(

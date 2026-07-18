@@ -84,9 +84,7 @@ def _load_run(jsonl: Path, relevant_substr: str) -> RunStats:
                 continue
             key = _dedup_key(rec)
             run.ids.add(key)
-            if relevant_substr and any(
-                relevant_substr in c.casefold() for c in _categories(rec)
-            ):
+            if relevant_substr and any(relevant_substr in c.casefold() for c in _categories(rec)):
                 run.relevant_ids.add(key)
     run.retained = len(run.ids)
     run.relevant = len(run.relevant_ids)
@@ -133,16 +131,12 @@ def analyze(directory: Path, relevant_substr: str) -> dict[str, Any]:
                     ),
                     "requests": r.requests,
                     "unique_per_request": (
-                        round(r.retained / r.requests, 2)
-                        if r.requests
-                        else None
+                        round(r.retained / r.requests, 2) if r.requests else None
                     ),
                     "duplicates": r.duplicates,
                     "outside": r.outside,
                     "outside_share": (
-                        round(r.outside / r.raw, 3)
-                        if r.raw and r.outside is not None
-                        else None
+                        round(r.outside / r.raw, 3) if r.raw and r.outside is not None else None
                     ),
                 }
                 for r in runs
@@ -154,40 +148,63 @@ def analyze(directory: Path, relevant_substr: str) -> dict[str, Any]:
 def _print_text(report: dict[str, Any]) -> None:
     print(f"Relevant category substring: {report['relevant_substr']!r}\n")
     for city, data in report["cities"].items():
-        print(f"== {city} ==  union floor: {data['union_floor']}  "
-              f"| relevant floor: {data['relevant_floor']}")
-        cols = ("retained", "recall", "relevant", "rel_rec", "reqs", "u/req",
-                "dup", "outside", "out%")
+        print(
+            f"== {city} ==  union floor: {data['union_floor']}  "
+            f"| relevant floor: {data['relevant_floor']}"
+        )
+        cols = (
+            "retained",
+            "recall",
+            "relevant",
+            "rel_rec",
+            "reqs",
+            "u/req",
+            "dup",
+            "outside",
+            "out%",
+        )
         rows = []
         for r in data["runs"]:
-            rows.append((
-                r["file"].replace(".jsonl", ""),
-                r["retained"], r["recall"], r["relevant"], r["relevant_recall"],
-                r["requests"] if r["requests"] is not None else "-",
-                r["unique_per_request"] if r["unique_per_request"] is not None else "-",
-                r["duplicates"] if r["duplicates"] is not None else "-",
-                r["outside"] if r["outside"] is not None else "-",
-                r["outside_share"] if r["outside_share"] is not None else "-",
-            ))
+            rows.append(
+                (
+                    r["file"].replace(".jsonl", ""),
+                    r["retained"],
+                    r["recall"],
+                    r["relevant"],
+                    r["relevant_recall"],
+                    r["requests"] if r["requests"] is not None else "-",
+                    r["unique_per_request"] if r["unique_per_request"] is not None else "-",
+                    r["duplicates"] if r["duplicates"] is not None else "-",
+                    r["outside"] if r["outside"] is not None else "-",
+                    r["outside_share"] if r["outside_share"] is not None else "-",
+                )
+            )
         namew = max([len("run")] + [len(str(row[0])) for row in rows])
         hdr = "run".ljust(namew) + "  " + "  ".join(c.rjust(7) for c in cols)
         print(hdr)
         print("-" * len(hdr))
         for row in rows:
-            print(str(row[0]).ljust(namew) + "  "
-                  + "  ".join(str(x).rjust(7) for x in row[1:]))
+            print(str(row[0]).ljust(namew) + "  " + "  ".join(str(x).rjust(7) for x in row[1:]))
         print()
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--dir", type=Path, default=Path("."),
-                    help="Directory of *.jsonl collect outputs (default: cwd).")
-    ap.add_argument("--relevant", default="chiropract",
-                    help="Case-insensitive category substring for the relevant "
-                         "recall floor (default: 'chiropract').")
-    ap.add_argument("--json", action="store_true",
-                    help="Emit machine-readable JSON instead of a table.")
+    ap.add_argument(
+        "--dir",
+        type=Path,
+        default=Path("."),
+        help="Directory of *.jsonl collect outputs (default: cwd).",
+    )
+    ap.add_argument(
+        "--relevant",
+        default="chiropract",
+        help="Case-insensitive category substring for the relevant "
+        "recall floor (default: 'chiropract').",
+    )
+    ap.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON instead of a table."
+    )
     args = ap.parse_args()
 
     report = analyze(args.dir, args.relevant.casefold())

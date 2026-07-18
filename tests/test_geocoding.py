@@ -121,7 +121,15 @@ async def test_resolve_subareas_clips_to_parent_and_dedupes() -> None:
         center=(33.75, -84.39),
         geometry={
             "type": "Polygon",
-            "coordinates": [[[-84.55, 33.64], [-84.29, 33.64], [-84.29, 33.89], [-84.55, 33.89], [-84.55, 33.64]]],
+            "coordinates": [
+                [
+                    [-84.55, 33.64],
+                    [-84.29, 33.64],
+                    [-84.29, 33.89],
+                    [-84.55, 33.89],
+                    [-84.55, 33.64],
+                ]
+            ],
         },
     )
     subs = await resolver.resolve_subareas(

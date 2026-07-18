@@ -70,16 +70,24 @@ POLICIES: dict[str, Policy] = {
     "P0": Policy("P0", "minimap only (current default)", {}),
     "P1a": Policy("P1a", "footprint buffer 1.0", {"footprint_buffer": 1.0}),
     "P1c": Policy("P1c", "footprint buffer 2.0", {"footprint_buffer": 2.0}),
-    "P2": Policy("P2", "minimap + neighborhood/ZIP diversity",
-                 {"enable_diversity_pass": True}),
+    "P2": Policy("P2", "minimap + neighborhood/ZIP diversity", {"enable_diversity_pass": True}),
     "P3": Policy("P3", "minimap + gap-fill", {"enable_gap_fill": True}),
-    "P4": Policy("P4", "minimap + diversity + gap-fill",
-                 {"enable_diversity_pass": True, "enable_gap_fill": True}),
+    "P4": Policy(
+        "P4",
+        "minimap + diversity + gap-fill",
+        {"enable_diversity_pass": True, "enable_gap_fill": True},
+    ),
     "P5": Policy("P5", "deep pagination (6 pages/cell)", {"minimap_max_pages": 6}),
-    "P6": Policy("P6", "deep pages + deeper split (6 pages, depth 2)",
-                 {"minimap_max_pages": 6, "minimap_max_depth": 2}),
-    "P7": Policy("P7", "deep pages + tight buffer (6 pages, buffer 1.0)",
-                 {"minimap_max_pages": 6, "footprint_buffer": 1.0}),
+    "P6": Policy(
+        "P6",
+        "deep pages + deeper split (6 pages, depth 2)",
+        {"minimap_max_pages": 6, "minimap_max_depth": 2},
+    ),
+    "P7": Policy(
+        "P7",
+        "deep pages + tight buffer (6 pages, buffer 1.0)",
+        {"minimap_max_pages": 6, "footprint_buffer": 1.0},
+    ),
 }
 DEFAULT_POLICIES = ["P0", "P1a", "P1c", "P2", "P3", "P4"]
 
@@ -95,8 +103,12 @@ async def _resolve_geometry(location: str, cache: Path, lang: str) -> dict[str, 
 
 
 def _state_for(
-    policy: Policy, query: str, location: str, resolved: dict[str, Any],
-    cell_size: float, max_results: int,
+    policy: Policy,
+    query: str,
+    location: str,
+    resolved: dict[str, Any],
+    cell_size: float,
+    max_results: int,
 ) -> CollectionState:
     box = resolved["bbox"]
     return CollectionState(
@@ -112,8 +124,16 @@ def _state_for(
 
 
 async def _run_policy(
-    policy: Policy, *, query: str, location: str, resolved: dict[str, Any],
-    cell_size: float, max_results: int, out_dir: Path, lang: str, timeout: float,
+    policy: Policy,
+    *,
+    query: str,
+    location: str,
+    resolved: dict[str, Any],
+    cell_size: float,
+    max_results: int,
+    out_dir: Path,
+    lang: str,
+    timeout: float,
 ) -> dict[str, Any]:
     prefix = out_dir / f"{policy.name}.json"
     # Fresh output each policy (no --resume): remove stale artifacts.
@@ -181,48 +201,75 @@ def _summarize(rows: list[dict[str, Any]], query: str) -> dict[str, Any]:
     for r in rows:
         reqs = r["discovery_requests"] or 0
         upr = round(r["retained"] / reqs, 2) if reqs else None
-        summary["policies"].append({
-            "policy": r["policy"],
-            "description": r["description"],
-            "retained": r["retained"],
-            "recall": round(len(set(r["retained_keys"]) & floor) / len(floor), 3) if floor else 0.0,
-            "relevant_recall": (
-                round(len(set(r["relevant_keys"]) & rel_floor) / len(rel_floor), 3)
-                if rel_floor else 0.0
-            ),
-            "requests": reqs,
-            "unique_per_request": upr,
-            "vs_baseline_x": (
-                round(upr / base_upr, 2) if upr and base_upr else None
-            ),
-            "duplicates": r["duplicates"],
-            "outside_boundary": r["outside_boundary"],
-            "outside_footprint": r["outside_footprint"],
-            "footprint_leak": r["footprint_leak"],
-            "cells_saturated": r["cells_saturated"],
-            "complete": r["complete"],
-            "elapsed_seconds": r["elapsed_seconds"],
-        })
+        summary["policies"].append(
+            {
+                "policy": r["policy"],
+                "description": r["description"],
+                "retained": r["retained"],
+                "recall": round(len(set(r["retained_keys"]) & floor) / len(floor), 3)
+                if floor
+                else 0.0,
+                "relevant_recall": (
+                    round(len(set(r["relevant_keys"]) & rel_floor) / len(rel_floor), 3)
+                    if rel_floor
+                    else 0.0
+                ),
+                "requests": reqs,
+                "unique_per_request": upr,
+                "vs_baseline_x": (round(upr / base_upr, 2) if upr and base_upr else None),
+                "duplicates": r["duplicates"],
+                "outside_boundary": r["outside_boundary"],
+                "outside_footprint": r["outside_footprint"],
+                "footprint_leak": r["footprint_leak"],
+                "cells_saturated": r["cells_saturated"],
+                "complete": r["complete"],
+                "elapsed_seconds": r["elapsed_seconds"],
+            }
+        )
     return summary
 
 
 def _print(summary: dict[str, Any]) -> None:
-    print(f"\nunion floor: {summary['union_floor']}  "
-          f"| relevant floor: {summary['relevant_floor']}  "
-          f"| P0 baseline u/req: {summary['baseline_unique_per_request']}")
+    print(
+        f"\nunion floor: {summary['union_floor']}  "
+        f"| relevant floor: {summary['relevant_floor']}  "
+        f"| P0 baseline u/req: {summary['baseline_unique_per_request']}"
+    )
     print("(gate: >=2x baseline u/req AND recall not below floor AND no false complete)\n")
-    cols = ("retain", "recall", "rel_rec", "reqs", "u/req", "x", "dup",
-            "out_b", "out_f", "leak", "sat", "done")
-    keys = ("retained", "recall", "relevant_recall", "requests", "unique_per_request",
-            "vs_baseline_x", "duplicates", "outside_boundary", "outside_footprint",
-            "footprint_leak", "cells_saturated", "complete")
+    cols = (
+        "retain",
+        "recall",
+        "rel_rec",
+        "reqs",
+        "u/req",
+        "x",
+        "dup",
+        "out_b",
+        "out_f",
+        "leak",
+        "sat",
+        "done",
+    )
+    keys = (
+        "retained",
+        "recall",
+        "relevant_recall",
+        "requests",
+        "unique_per_request",
+        "vs_baseline_x",
+        "duplicates",
+        "outside_boundary",
+        "outside_footprint",
+        "footprint_leak",
+        "cells_saturated",
+        "complete",
+    )
     namew = max(len("policy"), *(len(p["policy"]) for p in summary["policies"]))
     hdr = "policy".ljust(namew) + "  " + "  ".join(c.rjust(7) for c in cols)
     print(hdr)
     print("-" * len(hdr))
     for p in summary["policies"]:
-        print(p["policy"].ljust(namew) + "  "
-              + "  ".join(str(p.get(k)).rjust(7) for k in keys))
+        print(p["policy"].ljust(namew) + "  " + "  ".join(str(p.get(k)).rjust(7) for k in keys))
     print()
 
 
@@ -242,23 +289,34 @@ async def _main_async(args: argparse.Namespace) -> None:
         return
 
     resolved = await _resolve_geometry(args.location, cache, args.lang)
-    box = BoundingBox(**{k: float(resolved["bbox"][k])
-                         for k in ("min_lat", "min_lon", "max_lat", "max_lon")})
+    box = BoundingBox(
+        **{k: float(resolved["bbox"][k]) for k in ("min_lat", "min_lon", "max_lat", "max_lon")}
+    )
     cell_size = args.cell_size or choose_cell_size(box)
-    print(f"Geometry: {resolved.get('display_name')} | cell {cell_size:g} km "
-          f"| max_results {args.max_results}")
+    print(
+        f"Geometry: {resolved.get('display_name')} | cell {cell_size:g} km "
+        f"| max_results {args.max_results}"
+    )
 
     rows: list[dict[str, Any]] = []
     for policy in selected:
         print(f"\n=== {policy.name}: {policy.description} ===")
         row = await _run_policy(
-            policy, query=args.query, location=args.location, resolved=resolved,
-            cell_size=cell_size, max_results=args.max_results, out_dir=out_dir,
-            lang=args.lang, timeout=args.timeout,
+            policy,
+            query=args.query,
+            location=args.location,
+            resolved=resolved,
+            cell_size=cell_size,
+            max_results=args.max_results,
+            out_dir=out_dir,
+            lang=args.lang,
+            timeout=args.timeout,
         )
         rows.append(row)
-        print(f"  retained={row['retained']} requests={row['discovery_requests']} "
-              f"leak={row['footprint_leak']} complete={row['complete']}")
+        print(
+            f"  retained={row['retained']} requests={row['discovery_requests']} "
+            f"leak={row['footprint_leak']} complete={row['complete']}"
+        )
 
     summary = _summarize(rows, args.query)
     (out_dir / "benchmark.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -267,21 +325,34 @@ async def _main_async(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("-l", "--location", required=True, help='e.g. "Nashville, Tennessee"')
     ap.add_argument("-q", "--query", required=True, help="e.g. chiropractors")
     ap.add_argument("--out-dir", default="bench", help="Output directory (default: bench).")
-    ap.add_argument("--policies", default=",".join(DEFAULT_POLICIES),
-                    help=f"Comma list from {list(POLICIES)} (default: all).")
-    ap.add_argument("--cell-size", type=float, default=None,
-                    help="Override cell size km (default: choose_cell_size).")
-    ap.add_argument("--max-results", type=int, default=5000,
-                    help="Cap (keep high for a full-city floor; default 5000).")
+    ap.add_argument(
+        "--policies",
+        default=",".join(DEFAULT_POLICIES),
+        help=f"Comma list from {list(POLICIES)} (default: all).",
+    )
+    ap.add_argument(
+        "--cell-size",
+        type=float,
+        default=None,
+        help="Override cell size km (default: choose_cell_size).",
+    )
+    ap.add_argument(
+        "--max-results",
+        type=int,
+        default=5000,
+        help="Cap (keep high for a full-city floor; default 5000).",
+    )
     ap.add_argument("--lang", default="en")
     ap.add_argument("--timeout", type=float, default=30.0)
-    ap.add_argument("--dry-run", action="store_true",
-                    help="Print the plan and exit without any network calls.")
+    ap.add_argument(
+        "--dry-run", action="store_true", help="Print the plan and exit without any network calls."
+    )
     args = ap.parse_args()
 
     unknown = [p for p in args.policies.split(",") if p not in POLICIES]
