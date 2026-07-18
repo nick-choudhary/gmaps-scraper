@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .geocoding import geojson_contains
+from .geocoding import NominatimResolver, ResolvedLocation, geojson_contains
 from .grid import BoundingBox, estimate_cell_count
 from .rpc.parser import ParsedPlace
 from .stats import ScraperStats
@@ -160,9 +160,13 @@ class CollectionStore:
                 time.sleep(0.05 * (2**attempt))
 
 
-def choose_cell_size(bbox: BoundingBox, target_cells: int = 120) -> float:
-    """Choose a practical grid size without asking a human for coordinates."""
-    for size in (0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0, 50.0, 100.0):
+def choose_cell_size(bbox: BoundingBox, target_cells: int = 100) -> float:
+    """Choose a practical grid size without asking a human for coordinates.
+
+    Aim for tens of seeds, not hundreds. Out-of-polygon seed centers are
+    dropped later; dense cells can still split only when they yield many locals.
+    """
+    for size in (0.5, 1.0, 2.0, 3.0, 5.0, 8.0, 10.0, 15.0, 20.0, 50.0, 100.0):
         if estimate_cell_count(bbox, size) <= target_cells:
             return size
     estimated_at_100_km = estimate_cell_count(bbox, 100.0)
@@ -207,11 +211,33 @@ class CollectionRunner:
         store: CollectionStore,
         state: CollectionState,
         progress: Callable[[str], None] | None = None,
+        enable_diversity_pass: bool = False,
+        enable_gap_fill: bool = False,
+        footprint_buffer: float = 1.5,
+        minimap_max_pages: int = 6,
+        minimap_max_depth: int = 1,
+        on_footprint_drop: Callable[[ParsedPlace], None] | None = None,
     ) -> None:
+        # Diversity/gap-fill are optional coverage polish. Defaults off: live
+        # Nashville runs showed gap-fill = 0 new uniques after burning requests.
         self.client = client
         self.store = store
         self.state = state
         self.progress = progress or (lambda _message: None)
+        self.enable_diversity_pass = enable_diversity_pass
+        self.enable_gap_fill = enable_gap_fill
+        # footprint_buffer is the P1 recall/duplicate knob; on_footprint_drop lets
+        # a benchmark measure pure footprint recall leak (see scripts/).
+        self.footprint_buffer = footprint_buffer
+        # Pagination/split depth per mini-map. max_pages=6 (was 2): the live
+        # Nashville benchmark showed 2 pages cut recall to 0.745 and mislabeled
+        # 24 cells "saturated"; 6 pages reached 0.941 recall with only 2 saturated
+        # at the SAME request count (the early-stop guard makes deeper pages
+        # near-free). Deeper splitting (depth 2) did not add recall. See
+        # context/discovery-scheduler-plan.md.
+        self.minimap_max_pages = minimap_max_pages
+        self.minimap_max_depth = minimap_max_depth
+        self.on_footprint_drop = on_footprint_drop
         self.stats = ScraperStats()
         self.stats.total_requests = state.discovery_requests
         self.stats.total_places = state.raw_occurrences
@@ -241,7 +267,8 @@ class CollectionRunner:
             self.store.append_discovered(discovered)
             for place in discovered:
                 by_key[_place_key(place)] = place
-            self.state.completed_cells.add(event.cell.key())
+            checkpoint_key = getattr(event, "checkpoint_key", None) or event.cell.key()
+            self.state.completed_cells.add(checkpoint_key)
             self._sync_discovery_counters()
             self.store.save_state(self.state)
             self.store.write_manifest(self._manifest("running", by_key, started))
@@ -259,25 +286,112 @@ class CollectionRunner:
                 )
 
             boundary_filter = contains_location
+        fence = boundary_filter or bbox.contains
 
-        results = await self.client.search.grid_search(
+        # Phase 1 — Strategy B mini-maps (plain category query + footprint filter).
+        self.progress("Discovery phase 1/3: adaptive mini-maps")
+        results = await self.client.search.minimap_grid_search(
             query=self.state.query,
             bbox=bbox,
             cell_size_km=self.state.cell_size_km,
             max_results=self.state.max_results,
+            base_zoom=16.0,
+            max_pages=self.minimap_max_pages,
+            # Allow one split level only when a cell is truly dense with locals.
+            max_depth=self.minimap_max_depth,
             filter_to_bbox=True,
-            boundary_contains=boundary_filter,
+            footprint_buffer=self.footprint_buffer,
+            boundary_contains=fence,
             stats=self.stats,
             skip_cell_keys=self.state.completed_cells,
             initial_seen_ids={_place_key(place) for place in places},
             initial_places=places,
             on_cell=on_cell,
+            on_footprint_drop=self.on_footprint_drop,
         )
         for place, _cell in results:
             by_key[_place_key(place)] = place
         self._sync_discovery_counters()
         places = list(by_key.values())
         self.store.write_snapshot(places)
+
+        # Phase 2 — neighborhood / ZIP diversity (different text, same fence).
+        if (
+            self.enable_diversity_pass
+            and len(by_key) < self.state.max_results
+            and self.state.location
+        ):
+            self.progress("Discovery phase 2/3: neighborhood / ZIP diversity")
+            try:
+                center_info = self.state.resolved_location.get("center") or {}
+                parent = ResolvedLocation(
+                    query=self.state.location,
+                    display_name=str(
+                        self.state.resolved_location.get("display_name") or self.state.location
+                    ),
+                    bbox=bbox,
+                    center=(
+                        float(center_info.get("latitude") or (bbox.min_lat + bbox.max_lat) / 2),
+                        float(center_info.get("longitude") or (bbox.min_lon + bbox.max_lon) / 2),
+                    ),
+                    location_type=str(self.state.resolved_location.get("location_type") or ""),
+                    provider_id=str(self.state.resolved_location.get("provider_id") or ""),
+                    geometry=dict(geometry or {}),
+                )
+                resolver = NominatimResolver(timeout=12.0)
+                subareas = await resolver.resolve_subareas(
+                    self.state.location,
+                    parent=parent,
+                    max_subareas=40,
+                )
+            except Exception as exc:
+                self.progress(f"Diversity pass skipped: {type(exc).__name__}")
+                subareas = []
+
+            if subareas:
+                self.progress(f"Diversity: {len(subareas)} subareas")
+                div_results = await self.client.search.diversity_subarea_search(
+                    query=self.state.query,
+                    subareas=subareas,
+                    max_results=self.state.max_results,
+                    pages_per_subarea=2,
+                    filter_to_bbox=True,
+                    boundary_contains=fence,
+                    skip_keys=self.state.completed_cells,
+                    initial_seen_ids={_place_key(place) for place in by_key.values()},
+                    initial_places=list(by_key.values()),
+                    stats=self.stats,
+                    on_cell=on_cell,
+                )
+                for place, _cell in div_results:
+                    by_key[_place_key(place)] = place
+                self._sync_discovery_counters()
+                places = list(by_key.values())
+                self.store.write_snapshot(places)
+
+        # Phase 3 — gap-fill only empty patches (avoid re-scraping dense cores).
+        if self.enable_gap_fill and len(by_key) < self.state.max_results:
+            self.progress("Discovery phase 3/3: gap-fill uncovered patches")
+            gap_km = max(min(self.state.cell_size_km, 2.0), 1.0)
+            gap_results = await self.client.search.gap_fill_search(
+                query=self.state.query,
+                bbox=bbox,
+                places=list(by_key.values()),
+                cell_size_km=gap_km,
+                max_results=self.state.max_results,
+                pages_per_gap=2,
+                filter_to_bbox=True,
+                boundary_contains=fence,
+                skip_keys=self.state.completed_cells,
+                initial_seen_ids={_place_key(place) for place in by_key.values()},
+                stats=self.stats,
+                on_cell=on_cell,
+            )
+            for place, _cell in gap_results:
+                by_key[_place_key(place)] = place
+            self._sync_discovery_counters()
+            places = list(by_key.values())
+            self.store.write_snapshot(places)
 
         if self.state.enrich:
             for index, place in enumerate(places, start=1):
@@ -384,6 +498,7 @@ class CollectionRunner:
                 "discovery_requests": self.stats.total_requests,
                 "duplicates": self.stats.duplicates,
                 "outside_boundary": self.stats.outside_boundary,
+                "outside_footprint": self.stats.outside_footprint,
                 "cap_reached": self.stats.cap_reached,
                 "enriched": len(self.state.enriched_place_ids),
                 "enrichment_succeeded": sum(

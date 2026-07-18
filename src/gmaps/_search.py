@@ -13,18 +13,66 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import random
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
-from .grid import BoundingBox, GridCell, generate_cells
+from .control import center, quarter, region_km
+from .grid import KM_PER_DEGREE_LAT, BoundingBox, GridCell, generate_cells
 from .rpc.parser import ParsedPlace, parse_search_response
 
 if TYPE_CHECKING:
     from .transport import HTTPTransport
 
 logger = logging.getLogger(__name__)
+
+# Live Chrome capture (2026-07-16, Atlanta chiropractors):
+#   UI 14z/16z/18z all sent !4f13.1; only !1d viewport changed.
+#   16z → 6634.9 m, 14z → 26539.6 m, 18z → 1658.7 m (halves each +1 zoom).
+PROTOCOL_SEARCH_ZOOM = 13.1
+VIEWPORT_METERS_AT_UI_ZOOM_16 = 6634.902757720493
+
+# Strategy B adaptive mini-maps: UI zoom drives viewport (!1d), not !4f.
+DEFAULT_MINIMAP_ZOOM = 16.0
+DEFAULT_MINIMAP_MAX_ZOOM = 19.0
+DEFAULT_MINIMAP_MAX_DEPTH = 4
+DEFAULT_MINIMAP_MIN_CELL_KM = 0.25
+# Soft ceiling for one map view. Deep pages rank farther (Chrome-verified);
+# keep this low and split dense cells instead of paginating metro-wide lists.
+DEFAULT_MINIMAP_MAX_PAGES = 2
+
+
+def viewport_meters_for_ui_zoom(ui_zoom: float) -> float:
+    """Map visible Maps zoom → search ``!1d`` viewport meters.
+
+    Captured live: protocol ``!4f`` stays 13.1; each +1 UI zoom halves viewport.
+    """
+    return VIEWPORT_METERS_AT_UI_ZOOM_16 * (2.0 ** (16.0 - float(ui_zoom)))
+
+
+def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in meters between two WGS84 points."""
+    r = 6_371_000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(min(1.0, math.sqrt(a)))
+
+
+def cell_accept_radius_meters(cell_km: float, buffer: float = 1.5) -> float:
+    """Max distance from cell center to accept a place for that mini-map.
+
+    Half-diagonal of the cell square, times ``buffer``. Chrome z16 Atlanta
+    listings clustered ~1–3 km from center; this keeps ranking spillover from
+    far across the metro out of this cell's unique set (neighbors cover them).
+    """
+    half_diagonal_m = (max(cell_km, 0.01) / 2.0) * math.sqrt(2.0) * 1000.0
+    return half_diagonal_m * buffer
 
 
 def _place_dedup_key(place: ParsedPlace) -> str:
@@ -60,6 +108,35 @@ class GridCellProgress:
     total: int
     new_places: tuple[ParsedPlace, ...]
     stats: Any
+    checkpoint_key: str | None = None
+
+
+@dataclass(frozen=True)
+class _MiniMapTask:
+    """One zoom-locked mini-map search over a rectangular footprint."""
+
+    region: BoundingBox
+    zoom: float
+    depth: int
+
+
+def _region_to_cell(region: BoundingBox) -> GridCell:
+    lat, lon = center(region)
+    return GridCell(lat=lat, lon=lon)
+
+
+def _cell_to_region(cell: GridCell, cell_size_km: float) -> BoundingBox:
+    """Approximate the square footprint whose center is ``cell``."""
+    half = max(cell_size_km, 0.01) / 2.0
+    lat_delta = half / KM_PER_DEGREE_LAT
+    cos_lat = max(abs(math.cos(math.radians(cell.lat))), 1e-6)
+    lon_delta = half / (KM_PER_DEGREE_LAT * cos_lat)
+    return BoundingBox(
+        cell.lat - lat_delta,
+        cell.lon - lon_delta,
+        cell.lat + lat_delta,
+        cell.lon + lon_delta,
+    )
 
 
 class SearchAPI:
@@ -323,6 +400,651 @@ class SearchAPI:
         )
         return all_places
 
+    async def minimap_grid_search(
+        self,
+        query: str,
+        bbox: BoundingBox,
+        cell_size_km: float = 1.0,
+        max_results: int = 500,
+        *,
+        base_zoom: float = DEFAULT_MINIMAP_ZOOM,
+        max_zoom: float = DEFAULT_MINIMAP_MAX_ZOOM,
+        max_depth: int = DEFAULT_MINIMAP_MAX_DEPTH,
+        min_cell_km: float = DEFAULT_MINIMAP_MIN_CELL_KM,
+        max_pages: int = DEFAULT_MINIMAP_MAX_PAGES,
+        dedup: bool = True,
+        filter_to_bbox: bool = True,
+        footprint_buffer: float = 1.5,
+        boundary_contains: Callable[[float | None, float | None], bool] | None = None,
+        shuffle_cells: bool = True,
+        skip_cell_keys: set[str] | None = None,
+        initial_seen_ids: set[str] | None = None,
+        initial_places: list[ParsedPlace] | None = None,
+        stats: Any = None,
+        on_cell: Callable[[GridCellProgress], None] | None = None,
+        on_footprint_drop: Callable[[ParsedPlace], None] | None = None,
+    ) -> list[tuple[ParsedPlace, GridCell]]:
+        """Adaptive mini-maps inside a fixed fence (Strategy B).
+
+        Outer ``bbox`` never grows. For each mini-map (seed tile or child):
+
+        1. Search at dense UI zoom (default 16). Protocol ``!4f`` stays 13.1;
+           denser levels shrink ``!1d`` viewport (Chrome-verified).
+        2. 0 results → empty leaf. Partial page (<20) → leaf done.
+        3. Full pages → paginate same view up to ``max_pages`` (~6 ≈ 120).
+        4. If the view hits the soft ceiling (~120 / 6 full pages) →
+           **saturated**: quarter the cell, UI zoom+1, search children.
+           Do not trust the coarse view as complete.
+        5. Global ``place_id`` dedupe across all cells; re-hits are expected tax.
+        6. Optional polygon/bbox filter drops outside-fence points.
+        """
+        inside = boundary_contains or bbox.contains
+        seed_cells = list(generate_cells(bbox, cell_size_km))
+        # Rectangular bbox often covers land outside a city polygon. Searching
+        # those centers returns almost entirely fence-filtered ranking waste.
+        if boundary_contains is not None:
+            before = len(seed_cells)
+            seed_cells = [
+                cell for cell in seed_cells if boundary_contains(cell.lat, cell.lon)
+            ]
+            dropped = before - len(seed_cells)
+            if dropped:
+                logger.info(
+                    "Dropped %d/%d seed cells whose center is outside the fence",
+                    dropped,
+                    before,
+                )
+        if not seed_cells:
+            # Fall back to bbox grid if polygon filter wiped everything (bad geom).
+            seed_cells = list(generate_cells(bbox, cell_size_km))
+        if shuffle_cells:
+            random.shuffle(seed_cells)
+
+        queue: deque[_MiniMapTask] = deque(
+            _MiniMapTask(region=_cell_to_region(cell, cell_size_km), zoom=base_zoom, depth=0)
+            for cell in seed_cells
+        )
+        skipped_keys = set(skip_cell_keys or ())
+        seen_ids: set[str] = set(initial_seen_ids or ())
+        seen_places = {_place_dedup_key(place): place for place in initial_places or []}
+        all_results: list[tuple[ParsedPlace, GridCell]] = []
+        tasks_done = 0
+        tasks_planned = len(queue)
+        page_cap = max(1, min(max_pages, self.MAX_PER_AREA // self.MAX_PER_PAGE))
+
+        if stats:
+            stats.cells_total = tasks_planned
+            stats.cells_completed = len(
+                skipped_keys & {_region_to_cell(t.region).key() for t in queue}
+            )
+            for place_id in seen_ids:
+                stats.record_unique(place_id)
+
+        logger.info(
+            "Adaptive mini-map: '%s' | %d seed cells @ UI z%.1f "
+            "(protocol %.1f) | cell≈%.2f km | page-then-split on ~%d",
+            query,
+            len(seed_cells),
+            base_zoom,
+            PROTOCOL_SEARCH_ZOOM,
+            cell_size_km,
+            page_cap * self.MAX_PER_PAGE,
+        )
+
+        while queue:
+            if len(seen_ids) >= max_results:
+                if stats:
+                    stats.cap_reached = True
+                break
+
+            task = queue.popleft()
+            cell = _region_to_cell(task.region)
+            if cell.key() in skipped_keys:
+                continue
+
+            cell_km = max(region_km(task.region), min_cell_km)
+            lat, lon = center(task.region)
+            # Chrome: densify via viewport, not by raising !4f.
+            viewport_dist = viewport_meters_for_ui_zoom(task.zoom)
+            # Accept radius ≈ cell half-diagonal × buffer (gosom-style client filter).
+            # Ranking still returns metro-wide hits; we only *own* nearby ones.
+            # ``footprint_buffer`` is the recall/duplicate knob (P1 sweep target).
+            accept_radius_m = cell_accept_radius_meters(cell_km, footprint_buffer)
+            search_radius = int(max(viewport_dist, accept_radius_m))
+
+            def absorb(
+                places: list[ParsedPlace],
+                *,
+                lat: float,
+                lon: float,
+                accept_radius_m: float,
+                cell: GridCell,
+            ) -> list[ParsedPlace]:
+                kept: list[ParsedPlace] = []
+                for place in places:
+                    if place.latitude is None or place.longitude is None:
+                        if stats:
+                            stats.outside_boundary += 1
+                        continue
+                    # City/polygon fence first.
+                    if filter_to_bbox and not inside(place.latitude, place.longitude):
+                        if stats:
+                            stats.outside_boundary += 1
+                        continue
+                    # Mini-map footprint: drop far ranking spillover (cuts dups +
+                    # outside-looking waste). Neighbors that contain the place keep it.
+                    dist_m = haversine_meters(lat, lon, place.latitude, place.longitude)
+                    if dist_m > accept_radius_m:
+                        # Not a fence miss — cell-local reject (still counted separately).
+                        if stats:
+                            if hasattr(stats, "outside_footprint"):
+                                stats.outside_footprint += 1
+                            else:
+                                stats.outside_boundary += 1
+                        # In-fence but footprint-dropped: a neighbor cell must
+                        # recover it, else it is a pure footprint recall leak.
+                        # The hook lets a benchmark measure that (see
+                        # scripts/recall_floor.py --leak).
+                        if on_footprint_drop is not None:
+                            on_footprint_drop(place)
+                        continue
+                    place_key = _place_dedup_key(place)
+                    if dedup and place_key in seen_ids:
+                        existing = seen_places.get(place_key)
+                        if existing is not None and cell.key() not in existing.found_in_cells:
+                            existing.found_in_cells.append(cell.key())
+                        if stats:
+                            stats.duplicates += 1
+                        continue
+                    if dedup:
+                        seen_ids.add(place_key)
+                        seen_places[place_key] = place
+                        if stats:
+                            stats.record_unique(place_key)
+                    place.found_in_cells.append(cell.key())
+                    all_results.append((place, cell))
+                    kept.append(place)
+                    if len(seen_ids) >= max_results:
+                        if stats:
+                            stats.cap_reached = True
+                        break
+                return kept
+
+            retained: list[ParsedPlace] = []
+            raw_from_view = 0
+            full_pages = 0
+            last_page_len = 0
+            search_failed = False
+
+            for page_idx in range(page_cap):
+                if len(seen_ids) >= max_results:
+                    break
+                offset = page_idx * self.MAX_PER_PAGE
+                try:
+                    page = await self.places(
+                        query=query,
+                        latitude=lat,
+                        longitude=lon,
+                        max_results=self.MAX_PER_PAGE,
+                        offset=offset,
+                        radius_meters=search_radius,
+                        viewport_dist=viewport_dist,
+                        zoom=task.zoom,
+                    )
+                except Exception as exc:
+                    error_type = type(exc).__name__
+                    if stats:
+                        stats.record_error(
+                            error_type,
+                            str(exc),
+                            {
+                                "cell": cell.key(),
+                                "query": query,
+                                "zoom": task.zoom,
+                                "offset": offset,
+                            },
+                        )
+                        stats.cells_failed += 1
+                    logger.warning(
+                        "Mini-map cell %s failed @ offset %d: %s: %s",
+                        cell.key(),
+                        offset,
+                        error_type,
+                        str(exc)[:100],
+                    )
+                    search_failed = True
+                    break
+
+                if stats:
+                    stats.record_request()
+                    stats.record_success(len(page.places))
+
+                last_page_len = len(page.places)
+                if last_page_len == 0:
+                    break
+
+                raw_from_view += last_page_len
+                if last_page_len >= self.MAX_PER_PAGE:
+                    full_pages += 1
+                new_here = absorb(
+                    page.places,
+                    lat=lat,
+                    lon=lon,
+                    accept_radius_m=accept_radius_m,
+                    cell=cell,
+                )
+                retained.extend(new_here)
+
+                # Partial page → this view is exhausted.
+                if last_page_len < self.MAX_PER_PAGE:
+                    break
+                # No new local uniques on a full page → further pages are pure waste.
+                if not new_here:
+                    break
+                # Soft ceiling for one ranking/view.
+                if raw_from_view >= self.MAX_PER_AREA or full_pages >= page_cap:
+                    break
+
+                await asyncio.sleep(self._request_delay)
+
+            if search_failed and raw_from_view == 0:
+                continue
+
+            saturated = raw_from_view >= self.MAX_PER_AREA or full_pages >= page_cap
+            # Only split when the coarse view both maxed out AND found enough
+            # *local* uniques to justify 4 child requests. One lucky local on a
+            # full page of metro ranking must not explode the queue (sparse
+            # categories were burning minutes on empty children).
+            min_local_to_split = max(8, page_cap * 4)
+            can_split = (
+                saturated
+                and len(retained) >= min_local_to_split
+                and task.depth < max_depth
+                and (cell_km / 2.0) >= min_cell_km
+                and task.zoom < max_zoom
+                and len(seen_ids) < max_results
+            )
+
+            tasks_done += 1
+            if stats:
+                stats.cells_completed += 1
+                if retained:
+                    stats.cells_with_unique += 1
+                # Incomplete if maxed and we could not recover via children.
+                if saturated and not can_split:
+                    stats.cells_saturated += 1
+
+            if on_cell is not None:
+                on_cell(
+                    GridCellProgress(
+                        cell=cell,
+                        index=tasks_done,
+                        total=max(tasks_planned, tasks_done + len(queue)),
+                        new_places=tuple(retained),
+                        stats=stats,
+                    )
+                )
+
+            if can_split:
+                child_zoom = min(task.zoom + 1.0, max_zoom)
+                children = [
+                    _MiniMapTask(region=child, zoom=child_zoom, depth=task.depth + 1)
+                    for child in quarter(task.region)
+                ]
+                if shuffle_cells:
+                    random.shuffle(children)
+                queue.extend(children)
+                tasks_planned += len(children)
+                if stats:
+                    stats.cells_total = tasks_planned
+                logger.info(
+                    "Saturated view %s raw=%d pages=%d @ UI z%.1f viewport=%.0fm "
+                    "→ split %d children @ UI z%.1f viewport=%.0fm",
+                    cell.key(),
+                    raw_from_view,
+                    full_pages,
+                    task.zoom,
+                    viewport_dist,
+                    len(children),
+                    child_zoom,
+                    viewport_meters_for_ui_zoom(child_zoom),
+                )
+
+            if (tasks_done % 10 == 0 or not queue) and stats:
+                logger.info(
+                    "Adaptive progress: %d done | %d queued | %s",
+                    tasks_done,
+                    len(queue),
+                    stats.progress(),
+                )
+
+            await asyncio.sleep(self._request_delay)
+
+        logger.info(
+            "Adaptive mini-map complete: %d unique from %d searched views",
+            len(all_results),
+            tasks_done,
+        )
+        return all_results
+
+    async def diversity_subarea_search(
+        self,
+        query: str,
+        subareas: list[Any],
+        *,
+        max_results: int = 500,
+        pages_per_subarea: int = 2,
+        zoom: float = DEFAULT_MINIMAP_ZOOM,
+        dedup: bool = True,
+        filter_to_bbox: bool = True,
+        boundary_contains: Callable[[float | None, float | None], bool] | None = None,
+        skip_keys: set[str] | None = None,
+        initial_seen_ids: set[str] | None = None,
+        initial_places: list[ParsedPlace] | None = None,
+        stats: Any = None,
+        on_cell: Callable[[GridCellProgress], None] | None = None,
+    ) -> list[tuple[ParsedPlace, GridCell]]:
+        """Second pass: different text per neighborhood/ZIP to surface buried places.
+
+        Uses ``"{query} near {subarea.name}"`` (no city stuffed into every query —
+        live tests showed city-in-query hurts locality). Still filters to the
+        fixed parent fence + local footprint.
+        """
+        inside = boundary_contains or (lambda _lat, _lng: True)
+        seen_ids: set[str] = set(initial_seen_ids or ())
+        seen_places = {_place_dedup_key(place): place for place in initial_places or []}
+        skipped = set(skip_keys or ())
+        all_results: list[tuple[ParsedPlace, GridCell]] = []
+        done = 0
+        total = len(subareas)
+
+        if stats:
+            for place_id in seen_ids:
+                stats.record_unique(place_id)
+            stats.cells_total = max(getattr(stats, "cells_total", 0), total)
+
+        for index, sub in enumerate(subareas, start=1):
+            if len(seen_ids) >= max_results:
+                if stats:
+                    stats.cap_reached = True
+                break
+
+            lat = float(sub.center[0])
+            lon = float(sub.center[1])
+            cell = GridCell(lat=lat, lon=lon)
+            key = f"div:{sub.name}:{cell.key()}"
+            if key in skipped:
+                continue
+
+            # Characteristic size from subarea bbox for footprint + viewport.
+            sub_bbox = sub.bbox
+            cell_km = max(region_km(sub_bbox), 0.8)
+            viewport_dist = min(
+                viewport_meters_for_ui_zoom(zoom),
+                max(cell_km * 1000.0, 1500.0),
+            )
+            accept_radius_m = cell_accept_radius_meters(cell_km, buffer=1.75)
+            local_query = f"{query} near {sub.name}"
+            retained: list[ParsedPlace] = []
+
+            for page_idx in range(max(1, pages_per_subarea)):
+                if len(seen_ids) >= max_results:
+                    break
+                offset = page_idx * self.MAX_PER_PAGE
+                try:
+                    page = await self.places(
+                        query=local_query,
+                        latitude=lat,
+                        longitude=lon,
+                        max_results=self.MAX_PER_PAGE,
+                        offset=offset,
+                        radius_meters=int(accept_radius_m),
+                        viewport_dist=viewport_dist,
+                        zoom=zoom,
+                    )
+                except Exception as exc:
+                    if stats:
+                        stats.record_error(type(exc).__name__, str(exc), {"subarea": sub.name})
+                        stats.cells_failed += 1
+                    break
+
+                if stats:
+                    stats.record_request()
+                    stats.record_success(len(page.places))
+                if not page.places:
+                    break
+
+                new_here = 0
+                for place in page.places:
+                    if place.latitude is None or place.longitude is None:
+                        if stats:
+                            stats.outside_boundary += 1
+                        continue
+                    if filter_to_bbox and not inside(place.latitude, place.longitude):
+                        if stats:
+                            stats.outside_boundary += 1
+                        continue
+                    if (
+                        haversine_meters(lat, lon, place.latitude, place.longitude)
+                        > accept_radius_m
+                    ):
+                        if stats:
+                            stats.outside_boundary += 1
+                        continue
+                    place_key = _place_dedup_key(place)
+                    if dedup and place_key in seen_ids:
+                        if stats:
+                            stats.duplicates += 1
+                        continue
+                    if dedup:
+                        seen_ids.add(place_key)
+                        seen_places[place_key] = place
+                        if stats:
+                            stats.record_unique(place_key)
+                    place.found_in_cells.append(key)
+                    all_results.append((place, cell))
+                    retained.append(place)
+                    new_here += 1
+                    if len(seen_ids) >= max_results:
+                        if stats:
+                            stats.cap_reached = True
+                        break
+
+                if len(page.places) < self.MAX_PER_PAGE or new_here == 0:
+                    break
+                await asyncio.sleep(self._request_delay)
+
+            done += 1
+            if stats:
+                stats.cells_completed += 1
+                if retained:
+                    stats.cells_with_unique += 1
+            if on_cell is not None:
+                on_cell(
+                    GridCellProgress(
+                        cell=cell,
+                        index=index,
+                        total=total,
+                        new_places=tuple(retained),
+                        stats=stats,
+                        checkpoint_key=key,
+                    )
+                )
+            await asyncio.sleep(self._request_delay)
+
+        logger.info(
+            "Diversity pass complete: %d new uniques from %d/%d subareas",
+            len(all_results),
+            done,
+            total,
+        )
+        return all_results
+
+    async def gap_fill_search(
+        self,
+        query: str,
+        bbox: BoundingBox,
+        places: list[ParsedPlace],
+        *,
+        cell_size_km: float = 2.0,
+        max_results: int = 500,
+        pages_per_gap: int = 2,
+        zoom: float = DEFAULT_MINIMAP_ZOOM,
+        dedup: bool = True,
+        filter_to_bbox: bool = True,
+        boundary_contains: Callable[[float | None, float | None], bool] | None = None,
+        skip_keys: set[str] | None = None,
+        initial_seen_ids: set[str] | None = None,
+        stats: Any = None,
+        on_cell: Callable[[GridCellProgress], None] | None = None,
+    ) -> list[tuple[ParsedPlace, GridCell]]:
+        """Third pass: only search empty hex/grid patches still uncovered."""
+        from .coverage import uncovered_cell_centers
+
+        inside = boundary_contains or bbox.contains
+        gaps = uncovered_cell_centers(
+            bbox,
+            places,
+            cell_size_km=cell_size_km,
+            boundary_contains=boundary_contains,
+        )
+        seen_ids: set[str] = set(initial_seen_ids or ())
+        skipped = set(skip_keys or ())
+        all_results: list[tuple[ParsedPlace, GridCell]] = []
+
+        if stats:
+            for place_id in seen_ids:
+                stats.record_unique(place_id)
+            stats.cells_total = max(getattr(stats, "cells_total", 0), len(gaps))
+
+        logger.info("Gap-fill: %d uncovered centers at %.2f km", len(gaps), cell_size_km)
+
+        # Nashville full run: ~260 empty-gap requests for +1 unique. Abort once the
+        # long tail stops paying for itself.
+        empty_streak = 0
+        max_empty_streak = 12
+        gaps_searched = 0
+
+        for index, cell in enumerate(gaps, start=1):
+            if len(seen_ids) >= max_results:
+                if stats:
+                    stats.cap_reached = True
+                break
+            if empty_streak >= max_empty_streak:
+                logger.info(
+                    "Gap-fill early stop after %d consecutive empty gaps (%d searched)",
+                    empty_streak,
+                    gaps_searched,
+                )
+                break
+            key = f"gap:{cell.key()}"
+            if key in skipped:
+                continue
+
+            viewport_dist = min(
+                viewport_meters_for_ui_zoom(zoom),
+                max(cell_size_km * 1000.0, 1500.0),
+            )
+            accept_radius_m = cell_accept_radius_meters(cell_size_km, buffer=1.5)
+            retained: list[ParsedPlace] = []
+
+            for page_idx in range(max(1, pages_per_gap)):
+                if len(seen_ids) >= max_results:
+                    break
+                offset = page_idx * self.MAX_PER_PAGE
+                try:
+                    page = await self.places(
+                        query=query,
+                        latitude=cell.lat,
+                        longitude=cell.lon,
+                        max_results=self.MAX_PER_PAGE,
+                        offset=offset,
+                        radius_meters=int(accept_radius_m),
+                        viewport_dist=viewport_dist,
+                        zoom=zoom,
+                    )
+                except Exception as exc:
+                    if stats:
+                        stats.record_error(type(exc).__name__, str(exc), {"gap": cell.key()})
+                        stats.cells_failed += 1
+                    break
+
+                if stats:
+                    stats.record_request()
+                    stats.record_success(len(page.places))
+                if not page.places:
+                    break
+
+                new_here = 0
+                for place in page.places:
+                    if place.latitude is None or place.longitude is None:
+                        if stats:
+                            stats.outside_boundary += 1
+                        continue
+                    if filter_to_bbox and not inside(place.latitude, place.longitude):
+                        if stats:
+                            stats.outside_boundary += 1
+                        continue
+                    if (
+                        haversine_meters(cell.lat, cell.lon, place.latitude, place.longitude)
+                        > accept_radius_m
+                    ):
+                        if stats:
+                            stats.outside_boundary += 1
+                        continue
+                    place_key = _place_dedup_key(place)
+                    if dedup and place_key in seen_ids:
+                        if stats:
+                            stats.duplicates += 1
+                        continue
+                    if dedup:
+                        seen_ids.add(place_key)
+                        if stats:
+                            stats.record_unique(place_key)
+                    place.found_in_cells.append(key)
+                    all_results.append((place, cell))
+                    retained.append(place)
+                    new_here += 1
+                    if len(seen_ids) >= max_results:
+                        if stats:
+                            stats.cap_reached = True
+                        break
+
+                if len(page.places) < self.MAX_PER_PAGE or new_here == 0:
+                    break
+                await asyncio.sleep(self._request_delay)
+
+            gaps_searched += 1
+            if retained:
+                empty_streak = 0
+            else:
+                empty_streak += 1
+
+            if stats:
+                stats.cells_completed += 1
+                if retained:
+                    stats.cells_with_unique += 1
+            if on_cell is not None:
+                on_cell(
+                    GridCellProgress(
+                        cell=cell,
+                        index=index,
+                        total=len(gaps),
+                        new_places=tuple(retained),
+                        stats=stats,
+                        checkpoint_key=key,
+                    )
+                )
+            await asyncio.sleep(self._request_delay)
+
+        logger.info(
+            "Gap-fill complete: %d new uniques from %d/%d gaps searched",
+            len(all_results),
+            gaps_searched,
+            len(gaps),
+        )
+        return all_results
+
     async def grid_search(
         self,
         query: str,
@@ -355,8 +1077,6 @@ class SearchAPI:
 
         # gosom anti-detection: randomize cell order to avoid sequential
         # spatial scanning pattern that Google can detect
-        import random
-
         cells = list(cells)
         if shuffle_cells:
             random.shuffle(cells)
@@ -587,26 +1307,28 @@ def _build_search_url(
 ) -> str:
     """Build the verified Google Maps search URL.
 
-    Format verified against:
-    - gosom/google-maps-scraper buildGoogleMapsParams()
-    - promisingcoder/GoogleMapsCollector build_search_url()
-    - Apify blog on Google Maps scraping limits
-    - Live Google Maps July 2026 traffic analysis
+    Live Chrome capture (2026-07-16): UI zoom does **not** change ``!4f``.
+    Maps keeps protocol zoom at 13.1 and varies ``!1d`` viewport meters
+    (16z≈6635 m, 14z≈26540 m, 18z≈1659 m). The ``zoom`` argument is the
+    visible UI zoom used only to derive a default viewport when the caller
+    still passes the legacy default 10000 m.
 
     Key parameters:
-    - !4f{zoom}: Map zoom level (0-22). Higher = more pins visible.
-      Use 15-17 for dense results; 13 for broader coverage.
-    - !1d{viewport_dist}: Viewport extent in meters. Should match
-      cell_size_km * 500-1000 for grid searches.
+    - !4f: fixed protocol zoom 13.1 (current Maps UI).
+    - !1d{viewport_dist}: viewport extent in meters (the real zoom lever).
     - !7i{count}!8i{offset}: Pagination (20 per page, offset in 20s).
-    The current UI request does not expose a strict radius field. Geographic
-    enforcement remains client-side through the resolved location boundary.
+    Geographic enforcement remains client-side (resolved boundary / bbox).
     """
     enc = quote(query, safe="")
     q_param = enc.replace("%20", "+")
-    # Google Maps' visible URL zoom and its internal search-request zoom use
-    # different scales. A 16z map emitted 13.1 in verified July 2026 traffic.
-    protocol_zoom = max(0.0, zoom - 2.9)
+    # Prefer an explicit viewport. If the caller left the historical 10 km
+    # default, derive viewport from UI zoom so "zoom=16/18" behaves like Maps.
+    effective_viewport = float(viewport_dist)
+    if abs(effective_viewport - 10000.0) < 1e-6 and zoom != 16.0:
+        effective_viewport = viewport_meters_for_ui_zoom(zoom)
+    elif abs(effective_viewport - 10000.0) < 1e-6 and zoom == 16.0:
+        # Default zoom 16 with default viewport → browser-accurate 16z viewport.
+        effective_viewport = viewport_meters_for_ui_zoom(16.0)
     offset_field = f"!8i{offset}" if offset else ""
 
     return (
@@ -614,8 +1336,8 @@ def _build_search_url(
         f"?tbm=map&authuser=0&hl={language}&gl={region}"
         f"&q={q_param}"
         f"&pb=!1s{enc}"
-        f"!4m8!1m3!1d{viewport_dist}!2d{lng}!3d{lat}"
-        f"!3m2!1i1024!2i768!4f{protocol_zoom:g}"
+        f"!4m8!1m3!1d{effective_viewport}!2d{lng}!3d{lat}"
+        f"!3m2!1i1024!2i768!4f{PROTOCOL_SEARCH_ZOOM:g}"
         f"!7i{count}{offset_field}"
         f"!10b1"
         "!12m53!1m5!18b1!30b1!31m1!1b1!34e1"

@@ -42,6 +42,8 @@ class ScraperStats:
     cells_saturated: int = 0
     duplicates: int = 0
     outside_boundary: int = 0
+    # Ranking hits inside the city fence but outside this mini-map's footprint.
+    outside_footprint: int = 0
     cap_reached: bool = False
 
     # Timing
@@ -75,6 +77,10 @@ class ScraperStats:
             reasons.append("result_cap_reached")
         if self.cells_failed:
             reasons.append("cells_failed")
+        # cells_saturated is only incremented for an *unrecoverable* saturated
+        # leaf (grid_search has no split; minimap only counts it when
+        # `saturated and not can_split`). Such a leaf provably dropped businesses
+        # under Google's ~120/area cap, so the run must not claim completeness.
         if self.cells_saturated:
             reasons.append("saturated_cells")
         if self.cells_total and self.cells_completed + self.cells_failed < self.cells_total:
@@ -140,6 +146,7 @@ class ScraperStats:
             f"Failed cells:        {self.cells_failed}",
             f"Saturated cells:     {self.cells_saturated}",
             f"Outside boundary:    {self.outside_boundary}",
+            f"Outside footprint:   {self.outside_footprint}",
             f"Duplicates:          {self.duplicates}",
             f"Complete:            {self.complete}",
             "",

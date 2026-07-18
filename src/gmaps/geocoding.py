@@ -18,6 +18,44 @@ from .grid import BoundingBox
 NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
 USER_AGENT = f"gmaps-scraper/{__version__} (+https://github.com/nick-choudhary/gmaps-scraper)"
 
+# Prefer larger admin units first, then neighborhoods (coverage before fine grain).
+DEFAULT_SUBAREA_TYPES = (
+    "borough",
+    "city_district",
+    "district",
+    "suburb",
+    "neighbourhood",
+    "quarter",
+    "postal_code",
+)
+
+
+@dataclass(frozen=True)
+class SubArea:
+    """A named sub-region used for diversity search inside a fixed parent fence."""
+
+    name: str
+    display_name: str
+    bbox: BoundingBox
+    center: tuple[float, float]
+    area_type: str = ""
+    provider_id: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "display_name": self.display_name,
+            "area_type": self.area_type,
+            "provider_id": self.provider_id,
+            "center": {"latitude": self.center[0], "longitude": self.center[1]},
+            "bbox": {
+                "min_lat": self.bbox.min_lat,
+                "min_lon": self.bbox.min_lon,
+                "max_lat": self.bbox.max_lat,
+                "max_lon": self.bbox.max_lon,
+            },
+        }
+
 
 @dataclass(frozen=True)
 class ResolvedLocation:
@@ -157,3 +195,123 @@ class NominatimResolver:
             provider_id=f"{item.get('osm_type', '')}:{item.get('osm_id', '')}".strip(":"),
             geometry=dict(item.get("geojson") or {}),
         )
+
+    async def resolve_subareas(
+        self,
+        location: str,
+        *,
+        parent: ResolvedLocation | None = None,
+        area_types: tuple[str, ...] = DEFAULT_SUBAREA_TYPES,
+        limit_per_type: int = 40,
+        max_subareas: int = 60,
+        language: str = "en",
+    ) -> list[SubArea]:
+        """Discover neighborhoods / districts / ZIPs inside a named area.
+
+        Uses Nominatim text search with an optional parent viewbox so results
+        stay near the fixed job fence. Failures return an empty list so grid
+        discovery can still proceed alone.
+        """
+        query = location.strip()
+        if not query:
+            return []
+
+        parent = parent or await self.resolve(query, language=language)
+        headers = {"User-Agent": USER_AGENT, "Accept-Language": language}
+        seen_ids: set[str] = set()
+        found: list[SubArea] = []
+
+        async def _get(params: dict[str, str | int]) -> list[Any]:
+            if self._client is None:
+                async with httpx.AsyncClient(
+                    timeout=self._timeout, follow_redirects=True
+                ) as client:
+                    response = await client.get(self._endpoint, params=params, headers=headers)
+            else:
+                response = await self._client.get(
+                    self._endpoint,
+                    params=params,
+                    headers=headers,
+                    timeout=self._timeout,
+                )
+            response.raise_for_status()
+            payload = response.json()
+            return payload if isinstance(payload, list) else []
+
+        for area_type in area_types:
+            if len(found) >= max_subareas:
+                break
+            for q in (f"{area_type} in {query}", f"{query} {area_type}"):
+                if len(found) >= max_subareas:
+                    break
+                params: dict[str, str | int] = {
+                    "q": q,
+                    "format": "jsonv2",
+                    "limit": limit_per_type,
+                    "addressdetails": 1,
+                }
+                # Bias to parent box without requiring Nominatim hard clip.
+                params["viewbox"] = (
+                    f"{parent.bbox.min_lon},{parent.bbox.max_lat},"
+                    f"{parent.bbox.max_lon},{parent.bbox.min_lat}"
+                )
+                params["bounded"] = 1
+                try:
+                    results = await _get(params)
+                except Exception:
+                    continue
+
+                for item in results:
+                    if len(found) >= max_subareas:
+                        break
+                    if not isinstance(item, dict):
+                        continue
+                    osm_class = str(item.get("class") or "")
+                    if osm_class not in {"place", "boundary", "landuse"}:
+                        continue
+                    name = str(item.get("name") or "").strip()
+                    if not name:
+                        continue
+                    osm_id = str(item.get("osm_id") or "")
+                    if osm_id and osm_id in seen_ids:
+                        continue
+                    bbox_raw = item.get("boundingbox")
+                    if not bbox_raw or len(bbox_raw) != 4:
+                        continue
+                    try:
+                        south, north, west, east = (float(v) for v in bbox_raw)
+                        latitude = float(item["lat"])
+                        longitude = float(item["lon"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+
+                    # Clip to parent fence so children never expand the job.
+                    south = max(south, parent.bbox.min_lat)
+                    north = min(north, parent.bbox.max_lat)
+                    west = max(west, parent.bbox.min_lon)
+                    east = min(east, parent.bbox.max_lon)
+                    if north <= south or east <= west:
+                        continue
+                    # Keep centers that fall inside exact parent geometry when known.
+                    if not parent.contains(latitude, longitude):
+                        # Still allow if clipped bbox overlaps meaningfully.
+                        mid_lat = (south + north) / 2
+                        mid_lon = (west + east) / 2
+                        if not parent.contains(mid_lat, mid_lon):
+                            continue
+                        latitude, longitude = mid_lat, mid_lon
+
+                    if osm_id:
+                        seen_ids.add(osm_id)
+                    found.append(
+                        SubArea(
+                            name=name,
+                            display_name=str(item.get("display_name") or name),
+                            bbox=BoundingBox(south, west, north, east),
+                            center=(latitude, longitude),
+                            area_type=str(item.get("type") or area_type),
+                            provider_id=f"{item.get('osm_type', '')}:{osm_id}".strip(":"),
+                        )
+                    )
+
+        return found

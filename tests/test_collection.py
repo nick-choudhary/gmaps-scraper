@@ -9,7 +9,7 @@ from unittest import mock
 
 import pytest
 
-from gmaps._search import SearchAPI
+from gmaps._search import SearchAPI, SearchResult
 from gmaps.collection import CollectionRunner, CollectionState, CollectionStore, choose_cell_size
 from gmaps.grid import BoundingBox, estimate_cell_count
 from gmaps.rpc.parser import ParsedPlace
@@ -120,6 +120,9 @@ class _CollectionSearch(SearchAPI):
     async def places_paginated(self, **kwargs: Any) -> list[ParsedPlace]:
         return self.places_for_cell
 
+    async def places(self, **kwargs: Any) -> SearchResult:
+        return SearchResult(query=kwargs.get("query", ""), places=self.places_for_cell)
+
 
 class _CollectionClient:
     def __init__(self, places: list[ParsedPlace]) -> None:
@@ -176,6 +179,8 @@ async def test_runner_writes_complete_manifest_and_honors_contact_attempt_cap(tm
         client=client,
         store=store,
         state=state,
+        enable_diversity_pass=False,
+        enable_gap_fill=False,
     ).run()
 
     assert manifest["status"] == "complete"

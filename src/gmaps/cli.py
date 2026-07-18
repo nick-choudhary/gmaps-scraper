@@ -422,8 +422,9 @@ def collect(
                 else "contacts (all eligible websites)"
             )
         click.echo(
-            f"Plan: {planned_cells} cells at {state.cell_size_km:g} km; "
-            f"up to ~{planned_cells * 7} Google requests; phases: {', '.join(phases)}",
+            f"Plan: ~{planned_cells} seed cells at {state.cell_size_km:g} km | "
+            f"phase1 mini-maps (fence-filtered seeds, max 6 pages/cell) | "
+            f"UI z16 / protocol 13.1; phases: {', '.join(phases)}",
             err=True,
         )
 
