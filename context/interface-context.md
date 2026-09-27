@@ -2,7 +2,7 @@
 
 ## CLI
 
-The `gmaps` command provides four subcommands.
+The `gmaps` command provides search, collection, place, review, and rank-grid workflows.
 
 ### search
 
@@ -52,6 +52,26 @@ gmaps place ChIJ123456789 --enrich
 ```bash
 gmaps reviews "0x89c259a6bcd5e9d1:0x..." --sort newest --max 50
 ```
+
+### rank-grid
+
+```bash
+gmaps rank-grid "personal injury lawyer" \
+  --target ChIJ123456789 \
+  --lat 33.7490 --lng -84.3880 \
+  --grid-size 5 --spacing-km 1 \
+  --provider auto \
+  -o rank-grid.json --html-output rank-grid.html
+```
+
+`--provider auto` uses the pure-HTTP Google Maps search first. If
+`SERPER_API_KEY` is set, Serper Maps is used when the direct provider fails or
+returns no places. `--provider serper` requires that environment variable.
+Targets may be an exact Place ID, CID, hex ID, or business name; stable IDs are
+preferred. The grid size must be odd so one point is the requested center.
+
+The JSON contains every coordinate, provider, observed rank, matched place, and
+summary visibility metrics. The HTML file is a self-contained rank heatmap.
 
 ## Python API
 

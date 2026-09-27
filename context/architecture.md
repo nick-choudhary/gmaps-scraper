@@ -17,11 +17,12 @@
 - `src/gmaps/_search.py` — `SearchAPI`. Owns search, place details, grid search, pagination. Builds pb= URLs, calls transport, returns parsed results.
 - `src/gmaps/rpc/parser.py` — `ParsedPlace` dataclass (49 fields) + all extraction logic. Pure functions, no I/O. Field indices as module constants.
 - `src/gmaps/rpc/decoder.py` — Anti-XSSI stripping, JSON/HTML response detection, blocked/auth page detection.
-- `src/gmaps/transport.py` — `HTTPTransport`. Owns UA rotation, jittered rate limiting, retry logic, cookie injection. The only module that touches the network.
+- `src/gmaps/transport.py` — `HTTPTransport`. Owns UA rotation, jittered rate limiting, retry logic, and cookie injection for direct Google requests.
 - `src/gmaps/grid.py` — `BoundingBox`, `GridCell`, `generate_cells()`. Pure geometry, no I/O.
+- `src/gmaps/rank_grid.py` — centered rank-grid geometry, target matching, direct/Serper providers, and JSON/HTML heatmap output. The optional Serper provider owns its external API client; free/direct Maps traffic still goes through `HTTPTransport`.
 - `src/gmaps/_auth/session.py` — `CookieSession`. Owns the consent flow (google.com → consent → maps) and cookie persistence.
 - `src/gmaps/stats.py` — `ScraperStats`. Accumulates metrics during scraping runs.
-- `src/gmaps/cli.py` — Click commands: `search`, `grid`, `place`, `reviews`.
+- `src/gmaps/cli.py` — Click commands including `search`, `grid`, `collect`, `rank-grid`, `place`, and `reviews`.
 - `src/gmaps/mcp_server.py` — MCP server exposing `search`, `grid_search`, `place_details` tools.
 
 ## Data Flow
@@ -43,6 +44,15 @@ Phase 2 enrichment adds:
 ParsedPlace → SearchAPI.place_details() → /maps/preview/place
                     ↓
            parser.parse_place_details_response() → merge onto ParsedPlace
+```
+
+Rank-grid scans add:
+```
+center + spacing → coordinate grid → direct SearchAPI
+                                      ↓ on failure/empty, when configured
+                                  Serper Maps
+                                      ↓
+                         target identity match → rank JSON + HTML heatmap
 ```
 
 ## Storage Model

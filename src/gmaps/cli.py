@@ -13,9 +13,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from collections.abc import Coroutine, Sequence
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import click
 
@@ -309,6 +310,147 @@ def grid(
             click.echo(f"\nGrid: {len(results)} places from {len({c for _, c in results})} cells")
 
     _run_async(_grid())
+
+
+@main.command("rank-grid")
+@click.argument("query")
+@click.option(
+    "--target",
+    required=True,
+    help="Target Place ID, CID, hex ID, or exact business name.",
+)
+@click.option(
+    "--target-type",
+    type=click.Choice(["auto", "place-id", "cid", "hex-id", "name"]),
+    default="auto",
+    show_default=True,
+)
+@click.option("--lat", type=click.FloatRange(min=-90, max=90), required=True)
+@click.option("--lng", type=click.FloatRange(min=-180, max=180), required=True)
+@click.option(
+    "--grid-size",
+    type=click.IntRange(min=1, max=15),
+    default=5,
+    show_default=True,
+    help="Odd number of points per side.",
+)
+@click.option(
+    "--spacing-km",
+    type=click.FloatRange(min=0.01),
+    default=1.0,
+    show_default=True,
+)
+@click.option("--zoom", type=click.FloatRange(min=1, max=22), default=14.0, show_default=True)
+@click.option(
+    "--max-rank",
+    type=click.IntRange(min=1, max=100),
+    default=20,
+    show_default=True,
+)
+@click.option(
+    "--provider",
+    type=click.Choice(["auto", "direct", "serper"]),
+    default="auto",
+    show_default=True,
+    help="Auto uses direct Google Maps first and Serper as a configured fallback.",
+)
+@click.option("--output", "-o", default="rank-grid.json", show_default=True)
+@click.option("--html-output", default="rank-grid.html", show_default=True)
+@click.pass_context
+def rank_grid(
+    ctx: click.Context,
+    query: str,
+    target: str,
+    target_type: str,
+    lat: float,
+    lng: float,
+    grid_size: int,
+    spacing_km: float,
+    zoom: float,
+    max_rank: int,
+    provider: str,
+    output: str,
+    html_output: str,
+) -> None:
+    """Measure a business's Google Maps rank from a coordinate grid."""
+    if grid_size % 2 == 0:
+        raise click.BadParameter("must be odd", param_hint="--grid-size")
+
+    serper_api_key = os.environ.get("SERPER_API_KEY", "").strip()
+    if provider == "serper" and not serper_api_key:
+        raise click.UsageError("Set SERPER_API_KEY before using --provider serper.")
+
+    async def _rank_grid() -> None:
+        from .rank_grid import (
+            DirectGoogleMapsProvider,
+            FallbackRankProvider,
+            RankGridResult,
+            RankGridScanner,
+            RankSearchProvider,
+            RankTarget,
+            SerperMapsProvider,
+            TargetKind,
+            write_rank_grid_html,
+            write_rank_grid_json,
+        )
+
+        rank_target = RankTarget(
+            value=target,
+            kind=cast(TargetKind, target_type.replace("-", "_")),
+        )
+        serper = (
+            SerperMapsProvider(
+                serper_api_key,
+                language=ctx.obj["lang"],
+                timeout=ctx.obj["timeout"],
+            )
+            if serper_api_key
+            else None
+        )
+
+        async def run_scan(selected_provider: RankSearchProvider) -> RankGridResult:
+            scanner = RankGridScanner(selected_provider)
+            with click.progressbar(
+                length=grid_size * grid_size,
+                label="Scanning coordinates",
+            ) as progress:
+                return await scanner.scan(
+                    query=query,
+                    target=rank_target,
+                    center_latitude=lat,
+                    center_longitude=lng,
+                    grid_size=grid_size,
+                    spacing_km=spacing_km,
+                    zoom=zoom,
+                    max_rank=max_rank,
+                    on_point=lambda _point: progress.update(1),
+                )
+
+        try:
+            if provider == "serper":
+                assert serper is not None
+                result = await run_scan(serper)
+            else:
+                client = _make_client(ctx)
+                async with client:
+                    direct = DirectGoogleMapsProvider(client.search)
+                    selected = (
+                        FallbackRankProvider(direct, serper) if provider == "auto" else direct
+                    )
+                    result = await run_scan(selected)
+        finally:
+            if serper is not None:
+                await serper.aclose()
+
+        json_path = write_rank_grid_json(result, output)
+        html_path = write_rank_grid_html(result, html_output)
+        summary = result.summary()
+        click.echo(
+            f"Saved {summary['found_points']}/{summary['total_points']} visible points "
+            f"to {json_path} and {html_path}"
+        )
+
+    _run_async(_rank_grid())
 
 
 @main.command()

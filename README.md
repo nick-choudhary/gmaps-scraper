@@ -82,6 +82,30 @@ gmaps collect "chiropractors" --location "Nashville, Tennessee" \
 
 Run `gmaps --help` (or `gmaps collect --help`) to see everything.
 
+## Track local Google Maps rankings
+
+Measure where a business appears for the same query at every point in a
+geographic grid:
+
+```bash
+gmaps rank-grid "personal injury lawyer" \
+  --target ChIJ123456789 \
+  --lat 33.7490 --lng -84.3880 \
+  --grid-size 5 --spacing-km 1 \
+  -o rank-grid.json --html-output rank-grid.html
+```
+
+The default `--provider auto` mode uses this project's free, pure-HTTP Google
+Maps search first. To enable a paid fallback when Google blocks or returns no
+places, set `SERPER_API_KEY`; the command will then retry that coordinate through
+Serper Maps. You can also select `--provider direct` or `--provider serper`
+explicitly.
+
+Use a Google Place ID for the most reliable target match. CID, Maps hex ID, and
+exact business name are also supported through `--target-type`. The JSON output
+contains each coordinate, provider, rank, and matched listing; the HTML output
+is a standalone color-coded heatmap.
+
 ## Output formats
 
 - **JSON** *(default)* — a clean list of businesses with all fields. Best for feeding
