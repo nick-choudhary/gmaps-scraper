@@ -259,7 +259,7 @@ async def test_json_and_html_outputs_are_self_contained_and_escaped(
     html_path = write_rank_grid_html(result, tmp_path / "nested" / "rank.html")
     rendered = render_rank_grid_html(result)
 
-    assert json.loads(json_path.read_text())["points"][0]["rank"] == 1
-    assert html_path.read_text() == rendered
+    assert json.loads(json_path.read_text(encoding="utf-8"))["points"][0]["rank"] == 1
+    assert html_path.read_text(encoding="utf-8") == rendered
     assert "&lt;lawyer&gt;" in rendered
     assert "<script>" not in rendered
