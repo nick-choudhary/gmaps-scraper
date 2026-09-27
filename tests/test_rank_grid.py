@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import cast
 
@@ -10,6 +11,7 @@ import httpx
 import pytest
 
 from gmaps._search import SearchAPI, SearchResult
+from gmaps.grid import KM_PER_DEGREE_LAT
 from gmaps.rank_grid import (
     DirectGoogleMapsProvider,
     FallbackRankProvider,
@@ -63,30 +65,62 @@ class ErrorProvider:
 
 class FakeSearchAPI:
     def __init__(self, places: list[ParsedPlace]):
-        self.places = places
+        self._places = places
         self.kwargs: dict[str, object] = {}
 
-    async def places_paginated(self, **kwargs: object) -> list[ParsedPlace]:
+    async def places(self, **kwargs: object) -> SearchResult:
         self.kwargs = kwargs
-        return self.places
+        offset = cast(int, kwargs["offset"])
+        return SearchResult(
+            query=cast(str, kwargs["query"]),
+            places=self._places,
+            pagination_offset=offset,
+        )
 
 
 class PagedFakeSearchAPI:
-    async def places_paginated(self, **kwargs: object) -> list[ParsedPlace]:
-        on_page = cast(object, kwargs["on_page"])
-        assert callable(on_page)
-        first = ParsedPlace(name="First")
-        duplicate = ParsedPlace(name="First")
-        target = ParsedPlace(name="Target", place_id="ChIJ-target")
-        on_page(SearchResult(query="lawyer", places=[first], pagination_offset=0))
-        on_page(
-            SearchResult(
-                query="lawyer",
-                places=[duplicate, target],
-                pagination_offset=20,
-            )
+    def __init__(self) -> None:
+        first_page = [
+            ParsedPlace(name=f"Place {position}", place_id=f"ChIJ-{position}")
+            for position in range(1, 21)
+        ]
+        self.pages = {
+            0: first_page,
+            20: [first_page[0], ParsedPlace(name="Target", place_id="ChIJ-target")],
+        }
+
+    async def places(self, **kwargs: object) -> SearchResult:
+        offset = cast(int, kwargs["offset"])
+        places = self.pages.get(offset, [])
+        return SearchResult(
+            query=cast(str, kwargs["query"]),
+            places=places,
+            pagination_offset=offset,
+            next_offset=offset + 20 if len(places) >= 20 else None,
         )
-        return [first, target]
+
+
+class DuplicatePageSearchAPI:
+    def __init__(self) -> None:
+        first_page = [
+            ParsedPlace(name=f"Place {position}", place_id=f"ChIJ-{position}")
+            for position in range(1, 21)
+        ]
+        self.pages = {
+            0: first_page,
+            20: first_page,
+            40: [ParsedPlace(name="Target", place_id="ChIJ-target")],
+        }
+
+    async def places(self, **kwargs: object) -> SearchResult:
+        offset = cast(int, kwargs["offset"])
+        places = self.pages.get(offset, [])
+        return SearchResult(
+            query=cast(str, kwargs["query"]),
+            places=places,
+            pagination_offset=offset,
+            next_offset=offset + 20 if len(places) >= 20 else None,
+        )
 
 
 def test_generate_rank_grid_has_center_and_compass_order() -> None:
@@ -112,6 +146,16 @@ def test_generate_rank_grid_wraps_antimeridian_longitudes() -> None:
 def test_generate_rank_grid_rejects_points_beyond_the_poles() -> None:
     with pytest.raises(ValueError, match="valid latitude range"):
         generate_rank_grid(89.999, 0, grid_size=3, spacing_km=1)
+
+
+def test_generate_rank_grid_keeps_longitude_spacing_at_each_latitude() -> None:
+    points = generate_rank_grid(89.9, 0, grid_size=3, spacing_km=1)
+
+    for row in range(3):
+        left, center, right = points[row * 3 : row * 3 + 3]
+        km_per_degree = KM_PER_DEGREE_LAT * abs(math.cos(math.radians(center.latitude)))
+        assert (center.longitude - left.longitude) * km_per_degree == pytest.approx(1)
+        assert (right.longitude - center.longitude) * km_per_degree == pytest.approx(1)
 
 
 @pytest.mark.parametrize(
@@ -243,6 +287,15 @@ async def test_direct_provider_preserves_positions_across_duplicate_pages() -> N
 
     assert result.candidates[-1].place_id == "ChIJ-target"
     assert result.candidates[-1].position == 22
+
+
+async def test_direct_provider_continues_after_a_fully_duplicate_page() -> None:
+    provider = DirectGoogleMapsProvider(cast(SearchAPI, DuplicatePageSearchAPI()))
+
+    result = await provider.search("lawyer", 33.749, -84.388, 60, 14)
+
+    assert result.candidates[-1].place_id == "ChIJ-target"
+    assert result.candidates[-1].position == 41
 
 
 def test_serper_provider_configures_proxy(monkeypatch: pytest.MonkeyPatch) -> None:

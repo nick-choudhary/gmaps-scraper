@@ -129,35 +129,26 @@ class DirectGoogleMapsProvider:
         zoom: float,
     ) -> ProviderSearchResult:
         viewport_meters = viewport_meters_for_ui_zoom(zoom)
-        page_candidates: list[RankCandidate] = []
-
-        def observe_page(page: SearchResult) -> None:
-            for page_position, place in enumerate(
-                page.places,
-                start=page.pagination_offset + 1,
-            ):
-                if page_position <= max_rank:
-                    page_candidates.append(_candidate_from_place(place, page_position))
-
+        candidates: list[RankCandidate] = []
         try:
-            places = await self._search_api.places_paginated(
-                query=query,
-                latitude=latitude,
-                longitude=longitude,
-                max_results=max_rank,
-                radius_meters=max(1, round(viewport_meters)),
-                viewport_dist=viewport_meters,
-                zoom=zoom,
-                on_page=observe_page,
-            )
+            for offset in range(0, max_rank, SearchAPI.MAX_PER_PAGE):
+                page = await self._search_api.places(
+                    query=query,
+                    latitude=latitude,
+                    longitude=longitude,
+                    max_results=min(SearchAPI.MAX_PER_PAGE, max_rank - offset),
+                    offset=offset,
+                    radius_meters=max(1, round(viewport_meters)),
+                    viewport_dist=viewport_meters,
+                    zoom=zoom,
+                )
+                candidates.extend(_candidates_from_page(page, max_rank))
+                if page.next_offset is None:
+                    break
         except GMapsError as exc:
             raise RankProviderError(f"Direct Google Maps search failed: {exc}") from exc
 
-        candidates = tuple(page_candidates) or tuple(
-            _candidate_from_place(place, position)
-            for position, place in enumerate(places[:max_rank], start=1)
-        )
-        return ProviderSearchResult(provider=self.name, candidates=candidates)
+        return ProviderSearchResult(provider=self.name, candidates=tuple(candidates))
 
 
 class SerperMapsProvider:
@@ -470,12 +461,15 @@ def generate_rank_grid(
     if center_latitude - latitude_offset < -90 or center_latitude + latitude_offset > 90:
         raise ValueError("grid extends beyond the valid latitude range.")
 
-    lon_km_per_degree = KM_PER_DEGREE_LAT * max(abs(math.cos(math.radians(center_latitude))), 1e-6)
     coordinates: list[RankGridCoordinate] = []
 
     for row in range(grid_size):
         north_km = (half - row) * spacing_km
         latitude = center_latitude + north_km / KM_PER_DEGREE_LAT
+        lon_km_per_degree = KM_PER_DEGREE_LAT * max(
+            abs(math.cos(math.radians(latitude))),
+            1e-6,
+        )
         for column in range(grid_size):
             east_km = (column - half) * spacing_km
             longitude = center_longitude + east_km / lon_km_per_degree
@@ -594,6 +588,17 @@ def _candidate_from_place(place: ParsedPlace, position: int) -> RankCandidate:
         latitude=place.latitude,
         longitude=place.longitude,
     )
+
+
+def _candidates_from_page(page: SearchResult, max_rank: int) -> list[RankCandidate]:
+    return [
+        _candidate_from_place(place, position)
+        for position, place in enumerate(
+            page.places,
+            start=page.pagination_offset + 1,
+        )
+        if position <= max_rank
+    ]
 
 
 def _candidate_from_serper(place: Mapping[str, object], fallback_position: int) -> RankCandidate:
