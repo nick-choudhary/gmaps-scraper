@@ -107,6 +107,18 @@ contains each coordinate, provider, rank, and matched listing; the HTML output
 is a standalone color-coded heatmap. Failed provider requests are excluded from
 the visibility percentage instead of being counted as target-not-found results.
 
+For multi-keyword and multi-location scans, start the local interface:
+
+```bash
+gmaps rank-web
+```
+
+Open `http://127.0.0.1:8765`, enter one keyword and location per line, and
+configure the grid size, spacing, zoom, maximum rank, and provider. Locations
+may be plain names such as `Gainesville, Georgia` or explicit coordinates in
+`Name | latitude | longitude` format. Results include a heatmap for every
+keyword/location pair and can be exported as JSON.
+
 ## Output formats
 
 - **JSON** *(default)* — a clean list of businesses with all fields. Best for feeding

@@ -210,6 +210,8 @@ Full diagnosis + plan: [discovery-scheduler-plan.md](discovery-scheduler-plan.md
 - [x] Continued rank pagination through duplicate-only or partially parsed pages and preserved spacing by grid row.
 - [x] Preserved valid early-page matches when later direct pagination fails.
 - [x] Finished full verification and published the pull request.
+- [x] Added a local multi-keyword, multi-location rank-tracking interface with
+  named-place resolution, configurable grids, result heatmaps, and JSON export.
 
 1. **Validate Strategy B live** on Atlanta chiropractors.
 2. **Neighborhood/admin-area query sweep** if pure geo mini-maps still re-rank the

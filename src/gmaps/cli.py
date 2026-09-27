@@ -14,7 +14,7 @@ import asyncio
 import json
 import logging
 import os
-from collections.abc import Coroutine, Sequence
+from collections.abc import Coroutine, Mapping, Sequence
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
@@ -455,6 +455,137 @@ def rank_grid(
         )
 
     _run_async(_rank_grid())
+
+
+@main.command("rank-web")
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", type=click.IntRange(min=1, max=65535), default=8765, show_default=True)
+@click.pass_context
+def rank_web(ctx: click.Context, host: str, port: int) -> None:
+    """Run the local multi-keyword, multi-location rank tracker."""
+    from .geocoding import NominatimResolver
+    from .rank_grid import (
+        DirectGoogleMapsProvider,
+        FallbackRankProvider,
+        RankGridScanner,
+        RankSearchProvider,
+        RankTarget,
+        SerperMapsProvider,
+        TargetKind,
+    )
+    from .rank_web import RankWebRequest, serve_rank_web
+
+    async def scan_batch(payload: Mapping[str, object]) -> Mapping[str, object]:
+        request = RankWebRequest.from_payload(payload)
+        serper_api_key = os.environ.get("SERPER_API_KEY", "").strip()
+        if request.provider == "serper" and not serper_api_key:
+            raise ValueError("Set SERPER_API_KEY before using the Serper provider.")
+
+        resolver = NominatimResolver(timeout=ctx.obj["timeout"])
+        locations: list[dict[str, object]] = []
+        for location in request.locations:
+            if location.latitude is not None and location.longitude is not None:
+                latitude = location.latitude
+                longitude = location.longitude
+            else:
+                resolved = await resolver.resolve(location.name, language=ctx.obj["lang"])
+                latitude, longitude = resolved.center
+            locations.append(
+                {
+                    "name": location.name,
+                    "latitude": latitude,
+                    "longitude": longitude,
+                }
+            )
+
+        rank_target = RankTarget(
+            value=request.target,
+            kind=cast(TargetKind, request.target_type),
+        )
+        serper = (
+            SerperMapsProvider(
+                serper_api_key,
+                language=ctx.obj["lang"],
+                timeout=ctx.obj["timeout"],
+                proxy=ctx.obj["proxy"],
+            )
+            if serper_api_key
+            else None
+        )
+        scans: list[dict[str, object]] = []
+
+        async def run(selected_provider: RankSearchProvider) -> None:
+            scanner = RankGridScanner(selected_provider)
+            for location in locations:
+                for keyword in request.keywords:
+                    result = await scanner.scan(
+                        query=keyword,
+                        target=rank_target,
+                        center_latitude=cast(float, location["latitude"]),
+                        center_longitude=cast(float, location["longitude"]),
+                        grid_size=request.grid_size,
+                        spacing_km=request.spacing_km,
+                        zoom=request.zoom,
+                        max_rank=request.max_rank,
+                    )
+                    scans.append({"location": location, "result": result.to_dict()})
+
+        try:
+            if request.provider == "serper":
+                assert serper is not None
+                await run(serper)
+            else:
+                client = _make_client(ctx)
+                async with client:
+                    direct = DirectGoogleMapsProvider(client.search)
+                    selected = (
+                        FallbackRankProvider(direct, serper)
+                        if request.provider == "auto"
+                        else direct
+                    )
+                    await run(selected)
+        finally:
+            if serper is not None:
+                await serper.aclose()
+
+        results = [cast(dict[str, object], scan["result"]) for scan in scans]
+        summaries = [cast(dict[str, object], result["summary"]) for result in results]
+        best_ranks = [
+            cast(int, summary["best_rank"])
+            for summary in summaries
+            if summary["best_rank"] is not None
+        ]
+        return {
+            "request": {
+                "target": request.target,
+                "target_type": request.target_type,
+                "keywords": list(request.keywords),
+                "locations": locations,
+                "grid_size": request.grid_size,
+                "spacing_km": request.spacing_km,
+                "zoom": request.zoom,
+                "max_rank": request.max_rank,
+                "provider": request.provider,
+            },
+            "summary": {
+                "total_scans": len(scans),
+                "total_points": sum(cast(int, summary["total_points"]) for summary in summaries),
+                "measured_points": sum(
+                    cast(int, summary["measured_points"]) for summary in summaries
+                ),
+                "found_points": sum(cast(int, summary["found_points"]) for summary in summaries),
+                "error_points": sum(cast(int, summary["error_points"]) for summary in summaries),
+                "best_rank": min(best_ranks) if best_ranks else None,
+            },
+            "scans": scans,
+        }
+
+    click.echo(f"Maps Visibility Grid: http://{host}:{port}")
+    click.echo("Press Ctrl+C to stop.")
+    try:
+        serve_rank_web(lambda payload: _run_async(scan_batch(payload)), host=host, port=port)
+    except KeyboardInterrupt:
+        click.echo("\nStopped.")
 
 
 @main.command()

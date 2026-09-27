@@ -8,7 +8,7 @@ An unofficial Python library that scrapes Google Maps business data — names, a
 
 1. Scrape up to 10,000+ unique businesses per city via grid search with zero setup (no login, no API key, no proxy needed for moderate volume)
 2. Extract 49 fields per business across 8 grouped JSON categories, matching or exceeding gosom/google-maps-scraper field coverage
-3. Provide three interfaces: CLI (`gmaps`), Python API (`GMapsClient`), and MCP server (for AI agents like Claude/Cursor)
+3. Provide CLI (`gmaps`), Python API (`GMapsClient`), MCP server, and a local rank-tracking web interface
 4. Operate in three modes: fast search only, enriched (no login), or full (with login cookies for gated fields)
 
 ## Core User Flow
@@ -66,7 +66,7 @@ An unofficial Python library that scrapes Google Maps business data — names, a
 
 - Browser automation (Playwright/Selenium) — we use pure HTTP by design
 - Official Google Maps Platform API integration — different product
-- Web UI / SaaS platform — gosom has this; we're a library
+- Hosted SaaS platform — the rank tracker includes a local-only web interface
 - Email extraction from business websites — planned but not yet implemented
 - Real-time monitoring or dashboard — not a server product
 - Country-scale pre-indexed database — scrap.io's model, not ours

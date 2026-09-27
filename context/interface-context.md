@@ -2,7 +2,7 @@
 
 ## CLI
 
-The `gmaps` command provides search, collection, place, review, and rank-grid workflows.
+The `gmaps` command provides search, collection, place, review, rank-grid, and local web workflows.
 
 ### search
 
@@ -76,6 +76,21 @@ The JSON contains every coordinate, provider, observed rank, matched place, and
 summary visibility metrics. Visibility uses successfully measured points as its
 denominator; failed provider requests are reported separately. The HTML file is
 a self-contained rank heatmap.
+
+### rank-web
+
+```bash
+gmaps rank-web
+gmaps rank-web --host 0.0.0.0 --port 9000
+```
+
+The local interface accepts multiple keywords and locations in one scan.
+Locations may be resolved from names through Nominatim or supplied as
+`Name | latitude | longitude`. Users can configure target identity, grid size,
+kilometer spacing, zoom, maximum rank, and direct/Serper/automatic provider
+selection. The browser renders a heatmap for every keyword/location pair and
+can export the complete batch result as JSON. Batches are limited to 1,000
+coordinate searches to prevent accidental oversized runs.
 
 ## Python API
 

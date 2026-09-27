@@ -20,9 +20,10 @@
 - `src/gmaps/transport.py` — `HTTPTransport`. Owns UA rotation, jittered rate limiting, retry logic, and cookie injection for direct Google requests.
 - `src/gmaps/grid.py` — `BoundingBox`, `GridCell`, `generate_cells()`. Pure geometry, no I/O.
 - `src/gmaps/rank_grid.py` — centered rank-grid geometry, target matching, direct/Serper providers, and JSON/HTML heatmap output. The optional Serper provider owns its external API client and uses the configured proxy; free/direct Maps traffic still goes through `HTTPTransport`.
+- `src/gmaps/rank_web.py` — dependency-free local HTTP interface, batch request validation, and the self-contained multi-keyword/multi-location browser UI.
 - `src/gmaps/_auth/session.py` — `CookieSession`. Owns the consent flow (google.com → consent → maps) and cookie persistence.
 - `src/gmaps/stats.py` — `ScraperStats`. Accumulates metrics during scraping runs.
-- `src/gmaps/cli.py` — Click commands including `search`, `grid`, `collect`, `rank-grid`, `place`, and `reviews`.
+- `src/gmaps/cli.py` — Click commands including `search`, `grid`, `collect`, `rank-grid`, `rank-web`, `place`, and `reviews`.
 - `src/gmaps/mcp_server.py` — MCP server exposing `search`, `grid_search`, `place_details` tools.
 
 ## Data Flow
@@ -53,6 +54,15 @@ center + spacing → coordinate grid → direct SearchAPI
                                   Serper Maps
                                       ↓
                          target identity match → rank JSON + HTML heatmap
+```
+
+The local rank web interface adds:
+```
+browser form → local HTTP server → named-location resolution
+                                      ↓
+                         keyword × location rank-grid scans
+                                      ↓
+                      aggregate JSON → browser heatmaps/export
 ```
 
 ## Storage Model

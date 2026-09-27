@@ -53,6 +53,14 @@ def test_rank_grid_help_exposes_provider_and_output_options() -> None:
     assert "--html-output" in result.output
 
 
+def test_rank_web_help_exposes_server_options() -> None:
+    result = CliRunner().invoke(main, ["rank-web", "--help"])
+
+    assert result.exit_code == 0
+    assert "--host" in result.output
+    assert "--port" in result.output
+
+
 def test_rank_grid_rejects_even_grid_size_before_searching() -> None:
     result = CliRunner().invoke(
         main,
