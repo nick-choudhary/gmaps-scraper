@@ -95,6 +95,7 @@ class ProviderSearchResult:
 
     provider: str
     candidates: tuple[RankCandidate, ...]
+    error: str | None = None
 
 
 class RankSearchProvider(Protocol):
@@ -130,8 +131,9 @@ class DirectGoogleMapsProvider:
     ) -> ProviderSearchResult:
         viewport_meters = viewport_meters_for_ui_zoom(zoom)
         candidates: list[RankCandidate] = []
-        try:
-            for offset in range(0, max_rank, SearchAPI.MAX_PER_PAGE):
+        error: str | None = None
+        for offset in range(0, max_rank, SearchAPI.MAX_PER_PAGE):
+            try:
                 page = await self._search_api.places(
                     query=query,
                     latitude=latitude,
@@ -142,13 +144,20 @@ class DirectGoogleMapsProvider:
                     viewport_dist=viewport_meters,
                     zoom=zoom,
                 )
-                candidates.extend(_candidates_from_page(page, max_rank))
-                if not page.places:
-                    break
-        except GMapsError as exc:
-            raise RankProviderError(f"Direct Google Maps search failed: {exc}") from exc
+            except GMapsError as exc:
+                if not candidates:
+                    raise RankProviderError(f"Direct Google Maps search failed: {exc}") from exc
+                error = f"Direct Google Maps pagination stopped: {exc}"
+                break
+            candidates.extend(_candidates_from_page(page, max_rank))
+            if not page.places:
+                break
 
-        return ProviderSearchResult(provider=self.name, candidates=tuple(candidates))
+        return ProviderSearchResult(
+            provider=self.name,
+            candidates=tuple(candidates),
+            error=error,
+        )
 
 
 class SerperMapsProvider:
@@ -258,6 +267,15 @@ class FallbackRankProvider:
                     f"{primary_error}; fallback also failed: {fallback_error}"
                 ) from fallback_error
 
+        if primary_result.error is not None and self._fallback is not None:
+            try:
+                return await self._fallback.search(query, latitude, longitude, max_rank, zoom)
+            except RankProviderError as fallback_error:
+                return ProviderSearchResult(
+                    provider=primary_result.provider,
+                    candidates=primary_result.candidates,
+                    error=f"{primary_result.error}; fallback also failed: {fallback_error}",
+                )
         if primary_result.candidates or self._fallback is None:
             return primary_result
         return await self._fallback.search(query, latitude, longitude, max_rank, zoom)
@@ -409,6 +427,7 @@ class RankGridScanner:
                     rank=matched.position if matched is not None else None,
                     result_count=len(search_result.candidates),
                     matched_place=matched,
+                    error=(search_result.error or "") if matched is None else "",
                 )
             except RankProviderError as exc:
                 point = RankGridPoint(

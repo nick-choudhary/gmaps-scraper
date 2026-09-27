@@ -208,6 +208,7 @@ Full diagnosis + plan: [discovery-scheduler-plan.md](discovery-scheduler-plan.md
 - [x] Separated provider errors from measured visibility and guarded edge coordinates.
 - [x] Applied CLI proxies to Serper and rejected colliding JSON/HTML output paths.
 - [x] Continued rank pagination through duplicate-only or partially parsed pages and preserved spacing by grid row.
+- [x] Preserved valid early-page matches when later direct pagination fails.
 - [x] Finished full verification and published the pull request.
 
 1. **Validate Strategy B live** on Atlanta chiropractors.

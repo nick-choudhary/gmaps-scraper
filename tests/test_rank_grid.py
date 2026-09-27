@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from gmaps._search import SearchAPI, SearchResult
+from gmaps.exceptions import GMapsError
 from gmaps.grid import KM_PER_DEGREE_LAT
 from gmaps.rank_grid import (
     DirectGoogleMapsProvider,
@@ -61,6 +62,24 @@ class ErrorProvider:
         zoom: float,
     ) -> ProviderSearchResult:
         raise RankProviderError("blocked")
+
+
+class PartialProvider:
+    name = "partial"
+
+    async def search(
+        self,
+        query: str,
+        latitude: float,
+        longitude: float,
+        max_rank: int,
+        zoom: float,
+    ) -> ProviderSearchResult:
+        return ProviderSearchResult(
+            provider=self.name,
+            candidates=(RankCandidate(position=1, name="Other"),),
+            error="pagination stopped",
+        )
 
 
 class FakeSearchAPI:
@@ -136,6 +155,19 @@ class ShortPageSearchAPI:
         return SearchResult(
             query=cast(str, kwargs["query"]),
             places=places,
+            pagination_offset=offset,
+            next_offset=None,
+        )
+
+
+class ErrorAfterShortPageSearchAPI:
+    async def places(self, **kwargs: object) -> SearchResult:
+        offset = cast(int, kwargs["offset"])
+        if offset:
+            raise GMapsError("blocked")
+        return SearchResult(
+            query=cast(str, kwargs["query"]),
+            places=[ParsedPlace(name="Target", place_id="ChIJ-target")],
             pagination_offset=offset,
             next_offset=None,
         )
@@ -275,6 +307,14 @@ async def test_fallback_provider_uses_secondary_on_error_and_empty_results() -> 
     assert len(fallback.calls) == 2
 
 
+async def test_fallback_provider_uses_secondary_on_partial_results() -> None:
+    fallback = StaticProvider((RankCandidate(position=1, name="Target"),))
+
+    result = await FallbackRankProvider(PartialProvider(), fallback).search("lawyer", 1, 2, 20, 14)
+
+    assert result.candidates[0].name == "Target"
+
+
 async def test_direct_provider_uses_existing_search_api() -> None:
     search_api = FakeSearchAPI(
         [
@@ -323,6 +363,40 @@ async def test_direct_provider_continues_after_a_short_nonempty_page() -> None:
 
     assert result.candidates[-1].place_id == "ChIJ-target"
     assert result.candidates[-1].position == 21
+
+
+async def test_scanner_keeps_a_match_when_later_pagination_fails() -> None:
+    provider = DirectGoogleMapsProvider(cast(SearchAPI, ErrorAfterShortPageSearchAPI()))
+
+    result = await RankGridScanner(provider).scan(
+        query="lawyer",
+        target=RankTarget("ChIJ-target"),
+        center_latitude=33.749,
+        center_longitude=-84.388,
+        grid_size=1,
+        spacing_km=1,
+        max_rank=40,
+    )
+
+    assert result.points[0].rank == 1
+    assert result.points[0].error == ""
+
+
+async def test_scanner_marks_incomplete_search_without_a_match_as_error() -> None:
+    provider = DirectGoogleMapsProvider(cast(SearchAPI, ErrorAfterShortPageSearchAPI()))
+
+    result = await RankGridScanner(provider).scan(
+        query="lawyer",
+        target=RankTarget("Another business"),
+        center_latitude=33.749,
+        center_longitude=-84.388,
+        grid_size=1,
+        spacing_km=1,
+        max_rank=40,
+    )
+
+    assert result.points[0].rank is None
+    assert result.points[0].error == "Direct Google Maps pagination stopped: blocked"
 
 
 def test_serper_provider_configures_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
