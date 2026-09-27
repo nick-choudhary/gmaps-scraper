@@ -559,7 +559,8 @@ INDEX_HTML = """<!doctype html>
 
     function updateEstimate() {
       const total = lines("keywords").length * lines("locations").length * Number($("gridSize").value) ** 2;
-      $("estimate").textContent = `${total.toLocaleString()} coordinate searches`;
+      const label = total === 1 ? "coordinate search" : "coordinate searches";
+      $("estimate").textContent = `${total.toLocaleString()} ${label}`;
     }
 
     function loadKyle() {
@@ -612,7 +613,9 @@ INDEX_HTML = """<!doctype html>
         metric("Best rank", summary.best_rank ?? "—"),
         metric("Errors", summary.error_points)
       ].join("");
-      $("resultCaption").textContent = `${data.request.keywords.length} keywords · ${data.request.locations.length} locations`;
+      const keywordCount = data.request.keywords.length;
+      const locationCount = data.request.locations.length;
+      $("resultCaption").textContent = `${keywordCount} ${keywordCount === 1 ? "keyword" : "keywords"} · ${locationCount} ${locationCount === 1 ? "location" : "locations"}`;
       $("scanList").innerHTML = data.scans.map(scan => {
         const result = scan.result;
         const scanSummary = result.summary;
