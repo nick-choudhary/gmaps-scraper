@@ -123,6 +123,24 @@ class DuplicatePageSearchAPI:
         )
 
 
+class ShortPageSearchAPI:
+    def __init__(self) -> None:
+        self.pages = {
+            0: [ParsedPlace(name=f"Place {position}") for position in range(1, 4)],
+            20: [ParsedPlace(name="Target", place_id="ChIJ-target")],
+        }
+
+    async def places(self, **kwargs: object) -> SearchResult:
+        offset = cast(int, kwargs["offset"])
+        places = self.pages.get(offset, [])
+        return SearchResult(
+            query=cast(str, kwargs["query"]),
+            places=places,
+            pagination_offset=offset,
+            next_offset=None,
+        )
+
+
 def test_generate_rank_grid_has_center_and_compass_order() -> None:
     points = generate_rank_grid(33.749, -84.388, grid_size=3, spacing_km=1)
 
@@ -296,6 +314,15 @@ async def test_direct_provider_continues_after_a_fully_duplicate_page() -> None:
 
     assert result.candidates[-1].place_id == "ChIJ-target"
     assert result.candidates[-1].position == 41
+
+
+async def test_direct_provider_continues_after_a_short_nonempty_page() -> None:
+    provider = DirectGoogleMapsProvider(cast(SearchAPI, ShortPageSearchAPI()))
+
+    result = await provider.search("lawyer", 33.749, -84.388, 40, 14)
+
+    assert result.candidates[-1].place_id == "ChIJ-target"
+    assert result.candidates[-1].position == 21
 
 
 def test_serper_provider_configures_proxy(monkeypatch: pytest.MonkeyPatch) -> None:

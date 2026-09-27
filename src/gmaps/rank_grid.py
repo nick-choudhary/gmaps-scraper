@@ -143,7 +143,7 @@ class DirectGoogleMapsProvider:
                     zoom=zoom,
                 )
                 candidates.extend(_candidates_from_page(page, max_rank))
-                if page.next_offset is None:
+                if not page.places:
                     break
         except GMapsError as exc:
             raise RankProviderError(f"Direct Google Maps search failed: {exc}") from exc
