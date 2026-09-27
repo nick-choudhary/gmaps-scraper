@@ -14,7 +14,7 @@ from typing import Literal, Protocol, cast
 
 import httpx
 
-from ._search import SearchAPI, viewport_meters_for_ui_zoom
+from ._search import SearchAPI, SearchResult, viewport_meters_for_ui_zoom
 from .exceptions import GMapsError
 from .grid import KM_PER_DEGREE_LAT
 from .rpc.parser import ParsedPlace
@@ -129,6 +129,16 @@ class DirectGoogleMapsProvider:
         zoom: float,
     ) -> ProviderSearchResult:
         viewport_meters = viewport_meters_for_ui_zoom(zoom)
+        page_candidates: list[RankCandidate] = []
+
+        def observe_page(page: SearchResult) -> None:
+            for page_position, place in enumerate(
+                page.places,
+                start=page.pagination_offset + 1,
+            ):
+                if page_position <= max_rank:
+                    page_candidates.append(_candidate_from_place(place, page_position))
+
         try:
             places = await self._search_api.places_paginated(
                 query=query,
@@ -138,11 +148,12 @@ class DirectGoogleMapsProvider:
                 radius_meters=max(1, round(viewport_meters)),
                 viewport_dist=viewport_meters,
                 zoom=zoom,
+                on_page=observe_page,
             )
         except GMapsError as exc:
             raise RankProviderError(f"Direct Google Maps search failed: {exc}") from exc
 
-        candidates = tuple(
+        candidates = tuple(page_candidates) or tuple(
             _candidate_from_place(place, position)
             for position, place in enumerate(places[:max_rank], start=1)
         )
@@ -162,6 +173,7 @@ class SerperMapsProvider:
         language: str = "en",
         country: str = "us",
         timeout: float = 30.0,
+        proxy: str | None = None,
         client: httpx.AsyncClient | None = None,
     ):
         if not api_key.strip():
@@ -169,7 +181,7 @@ class SerperMapsProvider:
         self._api_key = api_key
         self._language = language
         self._country = country
-        self._client = client or httpx.AsyncClient(timeout=timeout)
+        self._client = client or httpx.AsyncClient(timeout=timeout, proxy=proxy)
         self._owns_client = client is None
 
     async def aclose(self) -> None:
@@ -323,12 +335,13 @@ class RankGridResult:
     def summary(self) -> dict[str, object]:
         ranks = [point.rank for point in self.points if point.rank is not None]
         found = len(ranks)
+        measured = sum(not point.error for point in self.points)
         return {
             "total_points": len(self.points),
+            "measured_points": measured,
             "found_points": found,
-            "visibility_percent": round((found / len(self.points)) * 100, 2)
-            if self.points
-            else 0.0,
+            "not_found_points": measured - found,
+            "visibility_percent": round((found / measured) * 100, 2) if measured else None,
             "best_rank": min(ranks) if ranks else None,
             "average_rank": round(sum(ranks) / found, 2) if ranks else None,
             "error_points": sum(bool(point.error) for point in self.points),
@@ -453,6 +466,10 @@ def generate_rank_grid(
         raise ValueError("center_longitude must be between -180 and 180.")
 
     half = grid_size // 2
+    latitude_offset = half * spacing_km / KM_PER_DEGREE_LAT
+    if center_latitude - latitude_offset < -90 or center_latitude + latitude_offset > 90:
+        raise ValueError("grid extends beyond the valid latitude range.")
+
     lon_km_per_degree = KM_PER_DEGREE_LAT * max(abs(math.cos(math.radians(center_latitude))), 1e-6)
     coordinates: list[RankGridCoordinate] = []
 
@@ -462,6 +479,8 @@ def generate_rank_grid(
         for column in range(grid_size):
             east_km = (column - half) * spacing_km
             longitude = center_longitude + east_km / lon_km_per_degree
+            if longitude < -180 or longitude > 180:
+                longitude = (longitude + 180) % 360 - 180
             coordinates.append(
                 RankGridCoordinate(
                     row=row,
@@ -496,6 +515,8 @@ def write_rank_grid_html(result: RankGridResult, output: str | Path) -> Path:
 def render_rank_grid_html(result: RankGridResult) -> str:
     """Render a portable HTML heatmap with no external assets."""
     summary = result.summary()
+    visibility = summary["visibility_percent"]
+    visibility_label = f"{visibility}%" if visibility is not None else "—"
     cells = "\n".join(_render_heatmap_cell(point) for point in result.points)
     query = html.escape(result.query)
     target = html.escape(result.target.value)
@@ -541,10 +562,10 @@ def render_rank_grid_html(result: RankGridResult) -> str:
   <div class="muted">Query: <strong>{query}</strong> · Target: <strong>{target}</strong></div>
   <div class="muted">Center: {result.center_latitude:.6f}, {result.center_longitude:.6f} · {result.spacing_km:g} km spacing · zoom {result.zoom:g}</div>
   <section class="stats">
-    <div class="stat"><span class="muted">Visibility</span><strong>{summary["visibility_percent"]}%</strong></div>
+    <div class="stat"><span class="muted">Visibility</span><strong>{visibility_label}</strong></div>
     <div class="stat"><span class="muted">Best rank</span><strong>{summary["best_rank"] or "—"}</strong></div>
     <div class="stat"><span class="muted">Average rank</span><strong>{summary["average_rank"] or "—"}</strong></div>
-    <div class="stat"><span class="muted">Found points</span><strong>{summary["found_points"]}/{summary["total_points"]}</strong></div>
+    <div class="stat"><span class="muted">Found points</span><strong>{summary["found_points"]}/{summary["measured_points"]}</strong></div>
   </section>
   <div class="legend">
     <span style="--color:#75e09c">1–3</span>

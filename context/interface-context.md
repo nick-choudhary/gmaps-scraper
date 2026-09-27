@@ -68,10 +68,14 @@ gmaps rank-grid "personal injury lawyer" \
 `SERPER_API_KEY` is set, Serper Maps is used when the direct provider fails or
 returns no places. `--provider serper` requires that environment variable.
 Targets may be an exact Place ID, CID, hex ID, or business name; stable IDs are
-preferred. The grid size must be odd so one point is the requested center.
+preferred. The grid size must be odd so one point is the requested center. A
+global `--proxy` applies to either provider, and the JSON and HTML output paths
+must be different.
 
 The JSON contains every coordinate, provider, observed rank, matched place, and
-summary visibility metrics. The HTML file is a self-contained rank heatmap.
+summary visibility metrics. Visibility uses successfully measured points as its
+denominator; failed provider requests are reported separately. The HTML file is
+a self-contained rank heatmap.
 
 ## Python API
 

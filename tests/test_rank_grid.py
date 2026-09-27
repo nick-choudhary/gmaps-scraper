@@ -9,7 +9,7 @@ from typing import cast
 import httpx
 import pytest
 
-from gmaps._search import SearchAPI
+from gmaps._search import SearchAPI, SearchResult
 from gmaps.rank_grid import (
     DirectGoogleMapsProvider,
     FallbackRankProvider,
@@ -71,6 +71,24 @@ class FakeSearchAPI:
         return self.places
 
 
+class PagedFakeSearchAPI:
+    async def places_paginated(self, **kwargs: object) -> list[ParsedPlace]:
+        on_page = cast(object, kwargs["on_page"])
+        assert callable(on_page)
+        first = ParsedPlace(name="First")
+        duplicate = ParsedPlace(name="First")
+        target = ParsedPlace(name="Target", place_id="ChIJ-target")
+        on_page(SearchResult(query="lawyer", places=[first], pagination_offset=0))
+        on_page(
+            SearchResult(
+                query="lawyer",
+                places=[duplicate, target],
+                pagination_offset=20,
+            )
+        )
+        return [first, target]
+
+
 def test_generate_rank_grid_has_center_and_compass_order() -> None:
     points = generate_rank_grid(33.749, -84.388, grid_size=3, spacing_km=1)
 
@@ -81,6 +99,19 @@ def test_generate_rank_grid_has_center_and_compass_order() -> None:
     assert points[0].longitude < points[4].longitude
     assert points[8].latitude < points[4].latitude
     assert points[8].longitude > points[4].longitude
+
+
+def test_generate_rank_grid_wraps_antimeridian_longitudes() -> None:
+    points = generate_rank_grid(0, 179.999, grid_size=3, spacing_km=1)
+
+    assert points[4].longitude == 179.999
+    assert all(-180 <= point.longitude <= 180 for point in points)
+    assert points[5].longitude < -179
+
+
+def test_generate_rank_grid_rejects_points_beyond_the_poles() -> None:
+    with pytest.raises(ValueError, match="valid latitude range"):
+        generate_rank_grid(89.999, 0, grid_size=3, spacing_km=1)
 
 
 @pytest.mark.parametrize(
@@ -134,7 +165,9 @@ async def test_scanner_records_rank_summary_and_progress() -> None:
     assert all(point.rank == 2 for point in result.points)
     assert result.summary() == {
         "total_points": 9,
+        "measured_points": 9,
         "found_points": 9,
+        "not_found_points": 0,
         "visibility_percent": 100.0,
         "best_rank": 2,
         "average_rank": 2.0,
@@ -154,7 +187,17 @@ async def test_scanner_records_provider_errors_per_point() -> None:
 
     assert result.points[0].rank is None
     assert result.points[0].error == "blocked"
-    assert result.summary()["error_points"] == 1
+    assert result.summary() == {
+        "total_points": 1,
+        "measured_points": 0,
+        "found_points": 0,
+        "not_found_points": 0,
+        "visibility_percent": None,
+        "best_rank": None,
+        "average_rank": None,
+        "error_points": 1,
+    }
+    assert "None%" not in render_rank_grid_html(result)
 
 
 async def test_fallback_provider_uses_secondary_on_error_and_empty_results() -> None:
@@ -191,6 +234,32 @@ async def test_direct_provider_uses_existing_search_api() -> None:
     assert search_api.kwargs["latitude"] == 33.749
     assert search_api.kwargs["longitude"] == -84.388
     assert search_api.kwargs["zoom"] == 14
+
+
+async def test_direct_provider_preserves_positions_across_duplicate_pages() -> None:
+    provider = DirectGoogleMapsProvider(cast(SearchAPI, PagedFakeSearchAPI()))
+
+    result = await provider.search("lawyer", 33.749, -84.388, 30, 14)
+
+    assert result.candidates[-1].place_id == "ChIJ-target"
+    assert result.candidates[-1].position == 22
+
+
+def test_serper_provider_configures_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs: object):
+            captured.update(kwargs)
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    SerperMapsProvider("secret", proxy="http://proxy.example:8080")
+
+    assert captured["proxy"] == "http://proxy.example:8080"
 
 
 async def test_serper_provider_sends_coordinate_request_and_parses_places() -> None:

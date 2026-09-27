@@ -204,7 +204,10 @@ Full diagnosis + plan: [discovery-scheduler-plan.md](discovery-scheduler-plan.md
 - [x] Added optional Serper Maps fallback through `SERPER_API_KEY`.
 - [x] Added JSON result serialization and a self-contained HTML heatmap.
 - [x] Added the `rank-grid` CLI plus README, interface, and architecture documentation.
-- [ ] Finish full verification and publish the pull request.
+- [x] Preserved raw pagination positions when repeated listings appear.
+- [x] Separated provider errors from measured visibility and guarded edge coordinates.
+- [x] Applied CLI proxies to Serper and rejected colliding JSON/HTML output paths.
+- [x] Finished full verification and published the pull request.
 
 1. **Validate Strategy B live** on Atlanta chiropractors.
 2. **Neighborhood/admin-area query sweep** if pure geo mini-maps still re-rank the

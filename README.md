@@ -99,12 +99,13 @@ The default `--provider auto` mode uses this project's free, pure-HTTP Google
 Maps search first. To enable a paid fallback when Google blocks or returns no
 places, set `SERPER_API_KEY`; the command will then retry that coordinate through
 Serper Maps. You can also select `--provider direct` or `--provider serper`
-explicitly.
+explicitly. A global `--proxy` applies to both direct and Serper requests.
 
 Use a Google Place ID for the most reliable target match. CID, Maps hex ID, and
 exact business name are also supported through `--target-type`. The JSON output
 contains each coordinate, provider, rank, and matched listing; the HTML output
-is a standalone color-coded heatmap.
+is a standalone color-coded heatmap. Failed provider requests are excluded from
+the visibility percentage instead of being counted as target-not-found results.
 
 ## Output formats
 

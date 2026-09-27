@@ -375,6 +375,8 @@ def rank_grid(
     """Measure a business's Google Maps rank from a coordinate grid."""
     if grid_size % 2 == 0:
         raise click.BadParameter("must be odd", param_hint="--grid-size")
+    if Path(output).expanduser().resolve() == Path(html_output).expanduser().resolve():
+        raise click.UsageError("--output and --html-output must use different files.")
 
     serper_api_key = os.environ.get("SERPER_API_KEY", "").strip()
     if provider == "serper" and not serper_api_key:
@@ -403,6 +405,7 @@ def rank_grid(
                 serper_api_key,
                 language=ctx.obj["lang"],
                 timeout=ctx.obj["timeout"],
+                proxy=ctx.obj["proxy"],
             )
             if serper_api_key
             else None
@@ -446,7 +449,8 @@ def rank_grid(
         html_path = write_rank_grid_html(result, html_output)
         summary = result.summary()
         click.echo(
-            f"Saved {summary['found_points']}/{summary['total_points']} visible points "
+            f"Saved {summary['found_points']}/{summary['measured_points']} visible points "
+            f"({summary['error_points']} errors) "
             f"to {json_path} and {html_path}"
         )
 

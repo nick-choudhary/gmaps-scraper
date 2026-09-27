@@ -19,7 +19,7 @@
 - `src/gmaps/rpc/decoder.py` — Anti-XSSI stripping, JSON/HTML response detection, blocked/auth page detection.
 - `src/gmaps/transport.py` — `HTTPTransport`. Owns UA rotation, jittered rate limiting, retry logic, and cookie injection for direct Google requests.
 - `src/gmaps/grid.py` — `BoundingBox`, `GridCell`, `generate_cells()`. Pure geometry, no I/O.
-- `src/gmaps/rank_grid.py` — centered rank-grid geometry, target matching, direct/Serper providers, and JSON/HTML heatmap output. The optional Serper provider owns its external API client; free/direct Maps traffic still goes through `HTTPTransport`.
+- `src/gmaps/rank_grid.py` — centered rank-grid geometry, target matching, direct/Serper providers, and JSON/HTML heatmap output. The optional Serper provider owns its external API client and uses the configured proxy; free/direct Maps traffic still goes through `HTTPTransport`.
 - `src/gmaps/_auth/session.py` — `CookieSession`. Owns the consent flow (google.com → consent → maps) and cookie persistence.
 - `src/gmaps/stats.py` — `ScraperStats`. Accumulates metrics during scraping runs.
 - `src/gmaps/cli.py` — Click commands including `search`, `grid`, `collect`, `rank-grid`, `place`, and `reviews`.

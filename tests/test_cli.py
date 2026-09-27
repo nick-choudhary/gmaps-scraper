@@ -74,6 +74,29 @@ def test_rank_grid_rejects_even_grid_size_before_searching() -> None:
     assert "must be odd" in result.output
 
 
+def test_rank_grid_rejects_matching_output_paths() -> None:
+    result = CliRunner().invoke(
+        main,
+        [
+            "rank-grid",
+            "lawyer",
+            "--target",
+            "Target",
+            "--lat",
+            "33.749",
+            "--lng",
+            "-84.388",
+            "--output",
+            "rank-result",
+            "--html-output",
+            "./rank-result",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "must use different files" in result.output
+
+
 def test_rank_grid_serper_requires_environment_key() -> None:
     result = CliRunner().invoke(
         main,
