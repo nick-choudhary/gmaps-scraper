@@ -23,6 +23,7 @@ from .exceptions import (
     RateLimitError,
     TimeoutError,
 )
+from .rank_grid import RankGridScanner, RankTarget
 
 __all__ = [
     "GMapsClient",
@@ -32,4 +33,6 @@ __all__ = [
     "ParseError",
     "NetworkError",
     "TimeoutError",
+    "RankGridScanner",
+    "RankTarget",
 ]

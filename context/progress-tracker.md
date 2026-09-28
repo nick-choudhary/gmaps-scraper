@@ -196,6 +196,25 @@ Full diagnosis + plan: [discovery-scheduler-plan.md](discovery-scheduler-plan.md
 
 ## Next Up
 
+### Coordinate rank tracking (2026-09-27)
+
+- [x] Added a centered odd-square coordinate grid with kilometer spacing.
+- [x] Added exact target matching by Place ID, CID, hex ID, or normalized name.
+- [x] Added the existing pure-HTTP Maps search as the free rank provider.
+- [x] Added optional Serper Maps fallback through `SERPER_API_KEY`.
+- [x] Added JSON result serialization and a self-contained HTML heatmap.
+- [x] Added the `rank-grid` CLI plus README, interface, and architecture documentation.
+- [x] Preserved raw pagination positions when repeated listings appear.
+- [x] Separated provider errors from measured visibility and guarded edge coordinates.
+- [x] Applied CLI proxies to Serper and rejected colliding JSON/HTML output paths.
+- [x] Continued rank pagination through duplicate-only or partially parsed pages and preserved spacing by grid row.
+- [x] Preserved valid early-page matches when later direct pagination fails.
+- [x] Finished full verification and published the pull request.
+- [x] Added a local multi-keyword, multi-location rank-tracking interface with
+  named-place resolution, configurable grids, result heatmaps, and JSON export.
+- [x] Added configurable top-three/top-five Google Maps profile snapshots at
+  every coordinate, including available ratings, reviews, addresses, IDs, and links.
+
 1. **Validate Strategy B live** on Atlanta chiropractors.
 2. **Neighborhood/admin-area query sweep** if pure geo mini-maps still re-rank the
    same city-wide set at every center.

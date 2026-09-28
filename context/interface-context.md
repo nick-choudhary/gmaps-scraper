@@ -2,7 +2,7 @@
 
 ## CLI
 
-The `gmaps` command provides four subcommands.
+The `gmaps` command provides search, collection, place, review, rank-grid, and local web workflows.
 
 ### search
 
@@ -52,6 +52,49 @@ gmaps place ChIJ123456789 --enrich
 ```bash
 gmaps reviews "0x89c259a6bcd5e9d1:0x..." --sort newest --max 50
 ```
+
+### rank-grid
+
+```bash
+gmaps rank-grid "personal injury lawyer" \
+  --target ChIJ123456789 \
+  --lat 33.7490 --lng -84.3880 \
+  --grid-size 5 --spacing-km 1 \
+  --top-profiles 3 \
+  --provider auto \
+  -o rank-grid.json --html-output rank-grid.html
+```
+
+`--provider auto` uses the pure-HTTP Google Maps search first. If
+`SERPER_API_KEY` is set, Serper Maps is used when the direct provider fails or
+returns no places. `--provider serper` requires that environment variable.
+Targets may be an exact Place ID, CID, hex ID, or business name; stable IDs are
+preferred. The grid size must be odd so one point is the requested center. A
+global `--proxy` applies to either provider, and the JSON and HTML output paths
+must be different.
+
+The JSON contains every coordinate, provider, observed target rank, matched
+place, and the requested top three or five Maps profiles. Each profile includes
+available identity, category, rating/review, address, website, Maps URL, and
+coordinate fields. Visibility uses successfully measured points as its
+denominator; failed provider requests are reported separately. The HTML file is
+a self-contained rank heatmap with per-coordinate profile tables.
+
+### rank-web
+
+```bash
+gmaps rank-web
+gmaps rank-web --host 0.0.0.0 --port 9000
+```
+
+The local interface accepts multiple keywords and locations in one scan.
+Locations may be resolved from names through Nominatim or supplied as
+`Name | latitude | longitude`. Users can configure target identity, grid size,
+kilometer spacing, zoom, maximum rank, top three or five profile capture, and
+direct/Serper/automatic provider selection. The browser renders a heatmap and
+per-coordinate Maps profile table for every keyword/location pair, and can
+export the complete batch result as JSON. Batches are limited to 1,000
+coordinate searches to prevent accidental oversized runs.
 
 ## Python API
 

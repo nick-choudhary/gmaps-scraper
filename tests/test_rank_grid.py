@@ -1,0 +1,577 @@
+"""Tests for coordinate rank-grid scanning."""
+
+from __future__ import annotations
+
+import json
+import math
+from pathlib import Path
+from typing import cast
+
+import httpx
+import pytest
+
+from gmaps._search import SearchAPI, SearchResult
+from gmaps.exceptions import GMapsError
+from gmaps.grid import KM_PER_DEGREE_LAT
+from gmaps.rank_grid import (
+    DirectGoogleMapsProvider,
+    FallbackRankProvider,
+    ProviderSearchResult,
+    RankCandidate,
+    RankGridScanner,
+    RankProviderError,
+    RankSearchProvider,
+    RankTarget,
+    SerperMapsProvider,
+    generate_rank_grid,
+    render_rank_grid_html,
+    write_rank_grid_html,
+    write_rank_grid_json,
+)
+from gmaps.rpc.parser import ParsedPlace
+
+
+class StaticProvider:
+    name = "static"
+
+    def __init__(self, candidates: tuple[RankCandidate, ...]):
+        self.candidates = candidates
+        self.calls: list[tuple[float, float]] = []
+
+    async def search(
+        self,
+        query: str,
+        latitude: float,
+        longitude: float,
+        max_rank: int,
+        zoom: float,
+    ) -> ProviderSearchResult:
+        self.calls.append((latitude, longitude))
+        return ProviderSearchResult(self.name, self.candidates[:max_rank])
+
+
+class ErrorProvider:
+    name = "error"
+
+    async def search(
+        self,
+        query: str,
+        latitude: float,
+        longitude: float,
+        max_rank: int,
+        zoom: float,
+    ) -> ProviderSearchResult:
+        raise RankProviderError("blocked")
+
+
+class PartialProvider:
+    name = "partial"
+
+    async def search(
+        self,
+        query: str,
+        latitude: float,
+        longitude: float,
+        max_rank: int,
+        zoom: float,
+    ) -> ProviderSearchResult:
+        return ProviderSearchResult(
+            provider=self.name,
+            candidates=(RankCandidate(position=1, name="Other"),),
+            error="pagination stopped",
+        )
+
+
+class FakeSearchAPI:
+    def __init__(self, places: list[ParsedPlace]):
+        self._places = places
+        self.kwargs: dict[str, object] = {}
+
+    async def places(self, **kwargs: object) -> SearchResult:
+        self.kwargs = kwargs
+        offset = cast(int, kwargs["offset"])
+        return SearchResult(
+            query=cast(str, kwargs["query"]),
+            places=self._places,
+            pagination_offset=offset,
+        )
+
+
+class PagedFakeSearchAPI:
+    def __init__(self) -> None:
+        first_page = [
+            ParsedPlace(name=f"Place {position}", place_id=f"ChIJ-{position}")
+            for position in range(1, 21)
+        ]
+        self.pages = {
+            0: first_page,
+            20: [first_page[0], ParsedPlace(name="Target", place_id="ChIJ-target")],
+        }
+
+    async def places(self, **kwargs: object) -> SearchResult:
+        offset = cast(int, kwargs["offset"])
+        places = self.pages.get(offset, [])
+        return SearchResult(
+            query=cast(str, kwargs["query"]),
+            places=places,
+            pagination_offset=offset,
+            next_offset=offset + 20 if len(places) >= 20 else None,
+        )
+
+
+class DuplicatePageSearchAPI:
+    def __init__(self) -> None:
+        first_page = [
+            ParsedPlace(name=f"Place {position}", place_id=f"ChIJ-{position}")
+            for position in range(1, 21)
+        ]
+        self.pages = {
+            0: first_page,
+            20: first_page,
+            40: [ParsedPlace(name="Target", place_id="ChIJ-target")],
+        }
+
+    async def places(self, **kwargs: object) -> SearchResult:
+        offset = cast(int, kwargs["offset"])
+        places = self.pages.get(offset, [])
+        return SearchResult(
+            query=cast(str, kwargs["query"]),
+            places=places,
+            pagination_offset=offset,
+            next_offset=offset + 20 if len(places) >= 20 else None,
+        )
+
+
+class ShortPageSearchAPI:
+    def __init__(self) -> None:
+        self.pages = {
+            0: [ParsedPlace(name=f"Place {position}") for position in range(1, 4)],
+            20: [ParsedPlace(name="Target", place_id="ChIJ-target")],
+        }
+
+    async def places(self, **kwargs: object) -> SearchResult:
+        offset = cast(int, kwargs["offset"])
+        places = self.pages.get(offset, [])
+        return SearchResult(
+            query=cast(str, kwargs["query"]),
+            places=places,
+            pagination_offset=offset,
+            next_offset=None,
+        )
+
+
+class ErrorAfterShortPageSearchAPI:
+    async def places(self, **kwargs: object) -> SearchResult:
+        offset = cast(int, kwargs["offset"])
+        if offset:
+            raise GMapsError("blocked")
+        return SearchResult(
+            query=cast(str, kwargs["query"]),
+            places=[ParsedPlace(name="Target", place_id="ChIJ-target")],
+            pagination_offset=offset,
+            next_offset=None,
+        )
+
+
+def test_generate_rank_grid_has_center_and_compass_order() -> None:
+    points = generate_rank_grid(33.749, -84.388, grid_size=3, spacing_km=1)
+
+    assert len(points) == 9
+    assert points[4].latitude == 33.749
+    assert points[4].longitude == -84.388
+    assert points[0].latitude > points[4].latitude
+    assert points[0].longitude < points[4].longitude
+    assert points[8].latitude < points[4].latitude
+    assert points[8].longitude > points[4].longitude
+
+
+def test_generate_rank_grid_wraps_antimeridian_longitudes() -> None:
+    points = generate_rank_grid(0, 179.999, grid_size=3, spacing_km=1)
+
+    assert points[4].longitude == 179.999
+    assert all(-180 <= point.longitude <= 180 for point in points)
+    assert points[5].longitude < -179
+
+
+def test_generate_rank_grid_rejects_points_beyond_the_poles() -> None:
+    with pytest.raises(ValueError, match="valid latitude range"):
+        generate_rank_grid(89.999, 0, grid_size=3, spacing_km=1)
+
+
+def test_generate_rank_grid_keeps_longitude_spacing_at_each_latitude() -> None:
+    points = generate_rank_grid(89.9, 0, grid_size=3, spacing_km=1)
+
+    for row in range(3):
+        left, center, right = points[row * 3 : row * 3 + 3]
+        km_per_degree = KM_PER_DEGREE_LAT * abs(math.cos(math.radians(center.latitude)))
+        assert (center.longitude - left.longitude) * km_per_degree == pytest.approx(1)
+        assert (right.longitude - center.longitude) * km_per_degree == pytest.approx(1)
+
+
+@pytest.mark.parametrize(
+    ("grid_size", "spacing_km"),
+    [(2, 1), (0, 1), (3, 0)],
+)
+def test_generate_rank_grid_rejects_invalid_geometry(grid_size: int, spacing_km: float) -> None:
+    with pytest.raises(ValueError):
+        generate_rank_grid(33.749, -84.388, grid_size=grid_size, spacing_km=spacing_km)
+
+
+def test_target_matches_stable_ids_and_normalized_name() -> None:
+    candidate = RankCandidate(
+        position=1,
+        name="Kyle   Moore Law",
+        place_id="ChIJ-place",
+        cid="12345",
+        hex_id="0xabc:0x3039",
+    )
+
+    assert RankTarget("ChIJ-place", "place_id").matches(candidate)
+    assert RankTarget("12345", "cid").matches(candidate)
+    assert RankTarget("0xabc:0x3039", "hex_id").matches(candidate)
+    assert RankTarget("kyle moore law", "name").matches(candidate)
+    assert RankTarget("12345").matches(candidate)
+    assert not RankTarget("Another Firm").matches(candidate)
+
+
+async def test_scanner_records_rank_summary_and_progress() -> None:
+    provider = StaticProvider(
+        (
+            RankCandidate(position=1, name="Other"),
+            RankCandidate(position=2, name="Target", place_id="ChIJ-target"),
+        )
+    )
+    completed = []
+
+    result = await RankGridScanner(provider).scan(
+        query="lawyer",
+        target=RankTarget("ChIJ-target"),
+        center_latitude=33.749,
+        center_longitude=-84.388,
+        grid_size=3,
+        spacing_km=0.5,
+        max_rank=20,
+        on_point=completed.append,
+    )
+
+    assert len(provider.calls) == 9
+    assert len(completed) == 9
+    assert all(point.rank == 2 for point in result.points)
+    assert all(
+        [profile.name for profile in point.top_profiles] == ["Other", "Target"]
+        for point in result.points
+    )
+    assert result.top_profile_count == 3
+    assert result.summary() == {
+        "total_points": 9,
+        "measured_points": 9,
+        "found_points": 9,
+        "not_found_points": 0,
+        "visibility_percent": 100.0,
+        "best_rank": 2,
+        "average_rank": 2.0,
+        "error_points": 0,
+    }
+
+
+async def test_scanner_records_provider_errors_per_point() -> None:
+    result = await RankGridScanner(ErrorProvider()).scan(
+        query="lawyer",
+        target=RankTarget("Target"),
+        center_latitude=33.749,
+        center_longitude=-84.388,
+        grid_size=1,
+        spacing_km=1,
+    )
+
+    assert result.points[0].rank is None
+    assert result.points[0].error == "blocked"
+    assert result.summary() == {
+        "total_points": 1,
+        "measured_points": 0,
+        "found_points": 0,
+        "not_found_points": 0,
+        "visibility_percent": None,
+        "best_rank": None,
+        "average_rank": None,
+        "error_points": 1,
+    }
+    assert "None%" not in render_rank_grid_html(result)
+
+
+async def test_scanner_captures_configurable_top_profiles_in_rank_order() -> None:
+    provider = StaticProvider(
+        (
+            RankCandidate(position=4, name="Fourth"),
+            RankCandidate(position=1, name="First"),
+            RankCandidate(position=3, name="Third"),
+            RankCandidate(position=2, name="Second"),
+            RankCandidate(position=5, name="Fifth"),
+            RankCandidate(position=6, name="Sixth"),
+        )
+    )
+
+    result = await RankGridScanner(provider).scan(
+        query="lawyer",
+        target=RankTarget("Missing"),
+        center_latitude=33.749,
+        center_longitude=-84.388,
+        grid_size=1,
+        spacing_km=1,
+        top_profile_count=5,
+    )
+
+    assert [profile.name for profile in result.points[0].top_profiles] == [
+        "First",
+        "Second",
+        "Third",
+        "Fourth",
+        "Fifth",
+    ]
+    assert result.to_dict()["top_profile_count"] == 5
+
+
+async def test_scanner_rejects_unsupported_top_profile_count() -> None:
+    with pytest.raises(ValueError, match="must be 3 or 5"):
+        await RankGridScanner(StaticProvider(())).scan(
+            query="lawyer",
+            target=RankTarget("Missing"),
+            center_latitude=33.749,
+            center_longitude=-84.388,
+            grid_size=1,
+            spacing_km=1,
+            top_profile_count=cast(object, 4),
+        )
+
+
+async def test_fallback_provider_uses_secondary_on_error_and_empty_results() -> None:
+    fallback = StaticProvider((RankCandidate(position=1, name="Target"),))
+    on_error = FallbackRankProvider(ErrorProvider(), fallback)
+    on_empty = FallbackRankProvider(StaticProvider(()), fallback)
+
+    error_result = await on_error.search("lawyer", 1, 2, 20, 14)
+    empty_result = await on_empty.search("lawyer", 1, 2, 20, 14)
+
+    assert error_result.provider == "static"
+    assert empty_result.provider == "static"
+    assert len(fallback.calls) == 2
+
+
+async def test_fallback_provider_uses_secondary_on_partial_results() -> None:
+    fallback = StaticProvider((RankCandidate(position=1, name="Target"),))
+
+    result = await FallbackRankProvider(PartialProvider(), fallback).search("lawyer", 1, 2, 20, 14)
+
+    assert result.candidates[0].name == "Target"
+
+
+async def test_direct_provider_uses_existing_search_api() -> None:
+    search_api = FakeSearchAPI(
+        [
+            ParsedPlace(
+                name="Target",
+                place_id="ChIJ-target",
+                cid="123",
+                address="123 Main St",
+                categories=["Personal injury attorney"],
+                rating=4.9,
+                review_count=25,
+                website="https://example.com",
+                google_maps_url="https://maps.google.com/?cid=123",
+                latitude=33.749,
+                longitude=-84.388,
+            )
+        ]
+    )
+    provider = DirectGoogleMapsProvider(cast(SearchAPI, search_api))
+
+    result = await provider.search("lawyer", 33.749, -84.388, 20, 14)
+
+    assert result.provider == "direct"
+    assert result.candidates[0].place_id == "ChIJ-target"
+    assert result.candidates[0].category == "Personal injury attorney"
+    assert result.candidates[0].rating == 4.9
+    assert result.candidates[0].review_count == 25
+    assert result.candidates[0].website == "https://example.com"
+    assert result.candidates[0].google_maps_url == "https://maps.google.com/?cid=123"
+    assert search_api.kwargs["latitude"] == 33.749
+    assert search_api.kwargs["longitude"] == -84.388
+    assert search_api.kwargs["zoom"] == 14
+
+
+async def test_direct_provider_preserves_positions_across_duplicate_pages() -> None:
+    provider = DirectGoogleMapsProvider(cast(SearchAPI, PagedFakeSearchAPI()))
+
+    result = await provider.search("lawyer", 33.749, -84.388, 30, 14)
+
+    assert result.candidates[-1].place_id == "ChIJ-target"
+    assert result.candidates[-1].position == 22
+
+
+async def test_direct_provider_continues_after_a_fully_duplicate_page() -> None:
+    provider = DirectGoogleMapsProvider(cast(SearchAPI, DuplicatePageSearchAPI()))
+
+    result = await provider.search("lawyer", 33.749, -84.388, 60, 14)
+
+    assert result.candidates[-1].place_id == "ChIJ-target"
+    assert result.candidates[-1].position == 41
+
+
+async def test_direct_provider_continues_after_a_short_nonempty_page() -> None:
+    provider = DirectGoogleMapsProvider(cast(SearchAPI, ShortPageSearchAPI()))
+
+    result = await provider.search("lawyer", 33.749, -84.388, 40, 14)
+
+    assert result.candidates[-1].place_id == "ChIJ-target"
+    assert result.candidates[-1].position == 21
+
+
+async def test_scanner_keeps_a_match_when_later_pagination_fails() -> None:
+    provider = DirectGoogleMapsProvider(cast(SearchAPI, ErrorAfterShortPageSearchAPI()))
+
+    result = await RankGridScanner(provider).scan(
+        query="lawyer",
+        target=RankTarget("ChIJ-target"),
+        center_latitude=33.749,
+        center_longitude=-84.388,
+        grid_size=1,
+        spacing_km=1,
+        max_rank=40,
+    )
+
+    assert result.points[0].rank == 1
+    assert result.points[0].error == ""
+
+
+async def test_scanner_marks_incomplete_search_without_a_match_as_error() -> None:
+    provider = DirectGoogleMapsProvider(cast(SearchAPI, ErrorAfterShortPageSearchAPI()))
+
+    result = await RankGridScanner(provider).scan(
+        query="lawyer",
+        target=RankTarget("Another business"),
+        center_latitude=33.749,
+        center_longitude=-84.388,
+        grid_size=1,
+        spacing_km=1,
+        max_rank=40,
+    )
+
+    assert result.points[0].rank is None
+    assert result.points[0].error == "Direct Google Maps pagination stopped: blocked"
+
+
+def test_serper_provider_configures_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs: object):
+            captured.update(kwargs)
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    SerperMapsProvider("secret", proxy="http://proxy.example:8080")
+
+    assert captured["proxy"] == "http://proxy.example:8080"
+
+
+async def test_serper_provider_sends_coordinate_request_and_parses_places() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["api_key"] = request.headers["X-API-KEY"]
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "places": [
+                    {
+                        "position": 3,
+                        "title": "Target",
+                        "placeId": "ChIJ-target",
+                        "cid": "123",
+                        "address": "123 Main St",
+                        "category": "Personal injury attorney",
+                        "rating": 4.8,
+                        "ratingCount": 41,
+                        "website": "https://example.com",
+                        "link": "https://maps.google.com/?cid=123",
+                        "latitude": 33.749,
+                        "longitude": -84.388,
+                    }
+                ]
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = SerperMapsProvider("secret", client=client)
+        result = await provider.search("lawyer", 33.749, -84.388, 20, 14)
+
+    assert captured["api_key"] == "secret"
+    assert captured["body"] == {
+        "q": "lawyer",
+        "ll": "@33.7490000,-84.3880000,14z",
+        "gl": "us",
+        "hl": "en",
+        "num": 20,
+    }
+    assert result.provider == "serper"
+    assert result.candidates[0].position == 3
+    assert result.candidates[0].place_id == "ChIJ-target"
+    assert result.candidates[0].category == "Personal injury attorney"
+    assert result.candidates[0].rating == 4.8
+    assert result.candidates[0].review_count == 41
+    assert result.candidates[0].website == "https://example.com"
+    assert result.candidates[0].google_maps_url == "https://maps.google.com/?cid=123"
+
+
+async def test_serper_provider_wraps_http_errors() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"message": "rate limited"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = SerperMapsProvider("secret", client=client)
+        with pytest.raises(RankProviderError, match="Serper Maps search failed"):
+            await provider.search("lawyer", 33.749, -84.388, 20, 14)
+
+
+async def test_json_and_html_outputs_are_self_contained_and_escaped(
+    tmp_path: Path,
+) -> None:
+    provider = StaticProvider(
+        (
+            RankCandidate(
+                position=1,
+                name="<script>Target</script>",
+                place_id="ChIJ-target",
+                address="123 Main St",
+                category="Attorney",
+                rating=4.9,
+                review_count=25,
+                website="https://example.com",
+                google_maps_url="https://maps.google.com/?cid=123",
+            ),
+        )
+    )
+    result = await RankGridScanner(cast(RankSearchProvider, provider)).scan(
+        query="<lawyer>",
+        target=RankTarget("<script>Target</script>", "name"),
+        center_latitude=33.749,
+        center_longitude=-84.388,
+        grid_size=1,
+        spacing_km=1,
+    )
+
+    json_path = write_rank_grid_json(result, tmp_path / "nested" / "rank.json")
+    html_path = write_rank_grid_html(result, tmp_path / "nested" / "rank.html")
+    rendered = render_rank_grid_html(result)
+
+    assert json.loads(json_path.read_text(encoding="utf-8"))["points"][0]["rank"] == 1
+    assert html_path.read_text(encoding="utf-8") == rendered
+    assert "&lt;lawyer&gt;" in rendered
+    assert "Top 3 Maps profiles at every coordinate" in rendered
+    assert "Maps profile" in rendered
+    assert "4.9 (25)" in rendered
+    assert "<script>" not in rendered

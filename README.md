@@ -82,6 +82,49 @@ gmaps collect "chiropractors" --location "Nashville, Tennessee" \
 
 Run `gmaps --help` (or `gmaps collect --help`) to see everything.
 
+## Track local Google Maps rankings
+
+Measure where a business appears for the same query at every point in a
+geographic grid:
+
+```bash
+gmaps rank-grid "personal injury lawyer" \
+  --target ChIJ123456789 \
+  --lat 33.7490 --lng -84.3880 \
+  --grid-size 5 --spacing-km 1 \
+  --top-profiles 3 \
+  -o rank-grid.json --html-output rank-grid.html
+```
+
+The default `--provider auto` mode uses this project's free, pure-HTTP Google
+Maps search first. To enable a paid fallback when Google blocks or returns no
+places, set `SERPER_API_KEY`; the command will then retry that coordinate through
+Serper Maps. You can also select `--provider direct` or `--provider serper`
+explicitly. A global `--proxy` applies to both direct and Serper requests.
+
+Use a Google Place ID for the most reliable target match. CID, Maps hex ID, and
+exact business name are also supported through `--target-type`. The JSON output
+contains each coordinate, provider, target rank, matched listing, and the top
+three or five Google Maps profiles. The HTML output combines the color-coded
+heatmap with profile tables containing rank, Place ID/CID, rating and review
+count, category, address, website, and Maps link when Google returns them.
+Failed provider requests are excluded from the visibility percentage instead
+of being counted as target-not-found results.
+
+For multi-keyword and multi-location scans, start the local interface:
+
+```bash
+gmaps rank-web
+```
+
+Open `http://127.0.0.1:8765`, enter one keyword and location per line, and
+configure the grid size, spacing, zoom, maximum rank, top three or five profile
+capture, and provider. Locations may be plain names such as
+`Gainesville, Georgia` or explicit coordinates in
+`Name | latitude | longitude` format. Results include a heatmap and the
+selected top Google Maps profiles at every coordinate for every
+keyword/location pair, and can be exported as JSON.
+
 ## Output formats
 
 - **JSON** *(default)* — a clean list of businesses with all fields. Best for feeding

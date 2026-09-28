@@ -42,3 +42,87 @@ def test_search_and_grid_expose_contact_attempt_limit() -> None:
 
     assert "--max-contacts" in runner.invoke(main, ["search", "--help"]).output
     assert "--max-contacts" in runner.invoke(main, ["grid", "--help"]).output
+
+
+def test_rank_grid_help_exposes_provider_and_output_options() -> None:
+    result = CliRunner().invoke(main, ["rank-grid", "--help"])
+
+    assert result.exit_code == 0
+    assert "--target" in result.output
+    assert "--provider" in result.output
+    assert "--top-profiles" in result.output
+    assert "--html-output" in result.output
+
+
+def test_rank_web_help_exposes_server_options() -> None:
+    result = CliRunner().invoke(main, ["rank-web", "--help"])
+
+    assert result.exit_code == 0
+    assert "--host" in result.output
+    assert "--port" in result.output
+
+
+def test_rank_grid_rejects_even_grid_size_before_searching() -> None:
+    result = CliRunner().invoke(
+        main,
+        [
+            "rank-grid",
+            "lawyer",
+            "--target",
+            "Target",
+            "--lat",
+            "33.749",
+            "--lng",
+            "-84.388",
+            "--grid-size",
+            "4",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "must be odd" in result.output
+
+
+def test_rank_grid_rejects_matching_output_paths() -> None:
+    result = CliRunner().invoke(
+        main,
+        [
+            "rank-grid",
+            "lawyer",
+            "--target",
+            "Target",
+            "--lat",
+            "33.749",
+            "--lng",
+            "-84.388",
+            "--output",
+            "rank-result",
+            "--html-output",
+            "./rank-result",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "must use different files" in result.output
+
+
+def test_rank_grid_serper_requires_environment_key() -> None:
+    result = CliRunner().invoke(
+        main,
+        [
+            "rank-grid",
+            "lawyer",
+            "--target",
+            "Target",
+            "--lat",
+            "33.749",
+            "--lng",
+            "-84.388",
+            "--provider",
+            "serper",
+        ],
+        env={"SERPER_API_KEY": ""},
+    )
+
+    assert result.exit_code == 2
+    assert "Set SERPER_API_KEY" in result.output
