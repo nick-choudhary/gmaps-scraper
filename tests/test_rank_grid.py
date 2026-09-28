@@ -257,6 +257,11 @@ async def test_scanner_records_rank_summary_and_progress() -> None:
     assert len(provider.calls) == 9
     assert len(completed) == 9
     assert all(point.rank == 2 for point in result.points)
+    assert all(
+        [profile.name for profile in point.top_profiles] == ["Other", "Target"]
+        for point in result.points
+    )
+    assert result.top_profile_count == 3
     assert result.summary() == {
         "total_points": 9,
         "measured_points": 9,
@@ -294,6 +299,51 @@ async def test_scanner_records_provider_errors_per_point() -> None:
     assert "None%" not in render_rank_grid_html(result)
 
 
+async def test_scanner_captures_configurable_top_profiles_in_rank_order() -> None:
+    provider = StaticProvider(
+        (
+            RankCandidate(position=4, name="Fourth"),
+            RankCandidate(position=1, name="First"),
+            RankCandidate(position=3, name="Third"),
+            RankCandidate(position=2, name="Second"),
+            RankCandidate(position=5, name="Fifth"),
+            RankCandidate(position=6, name="Sixth"),
+        )
+    )
+
+    result = await RankGridScanner(provider).scan(
+        query="lawyer",
+        target=RankTarget("Missing"),
+        center_latitude=33.749,
+        center_longitude=-84.388,
+        grid_size=1,
+        spacing_km=1,
+        top_profile_count=5,
+    )
+
+    assert [profile.name for profile in result.points[0].top_profiles] == [
+        "First",
+        "Second",
+        "Third",
+        "Fourth",
+        "Fifth",
+    ]
+    assert result.to_dict()["top_profile_count"] == 5
+
+
+async def test_scanner_rejects_unsupported_top_profile_count() -> None:
+    with pytest.raises(ValueError, match="must be 3 or 5"):
+        await RankGridScanner(StaticProvider(())).scan(
+            query="lawyer",
+            target=RankTarget("Missing"),
+            center_latitude=33.749,
+            center_longitude=-84.388,
+            grid_size=1,
+            spacing_km=1,
+            top_profile_count=cast(object, 4),
+        )
+
+
 async def test_fallback_provider_uses_secondary_on_error_and_empty_results() -> None:
     fallback = StaticProvider((RankCandidate(position=1, name="Target"),))
     on_error = FallbackRankProvider(ErrorProvider(), fallback)
@@ -322,6 +372,12 @@ async def test_direct_provider_uses_existing_search_api() -> None:
                 name="Target",
                 place_id="ChIJ-target",
                 cid="123",
+                address="123 Main St",
+                categories=["Personal injury attorney"],
+                rating=4.9,
+                review_count=25,
+                website="https://example.com",
+                google_maps_url="https://maps.google.com/?cid=123",
                 latitude=33.749,
                 longitude=-84.388,
             )
@@ -333,6 +389,11 @@ async def test_direct_provider_uses_existing_search_api() -> None:
 
     assert result.provider == "direct"
     assert result.candidates[0].place_id == "ChIJ-target"
+    assert result.candidates[0].category == "Personal injury attorney"
+    assert result.candidates[0].rating == 4.9
+    assert result.candidates[0].review_count == 25
+    assert result.candidates[0].website == "https://example.com"
+    assert result.candidates[0].google_maps_url == "https://maps.google.com/?cid=123"
     assert search_api.kwargs["latitude"] == 33.749
     assert search_api.kwargs["longitude"] == -84.388
     assert search_api.kwargs["zoom"] == 14
@@ -431,6 +492,12 @@ async def test_serper_provider_sends_coordinate_request_and_parses_places() -> N
                         "title": "Target",
                         "placeId": "ChIJ-target",
                         "cid": "123",
+                        "address": "123 Main St",
+                        "category": "Personal injury attorney",
+                        "rating": 4.8,
+                        "ratingCount": 41,
+                        "website": "https://example.com",
+                        "link": "https://maps.google.com/?cid=123",
                         "latitude": 33.749,
                         "longitude": -84.388,
                     }
@@ -453,6 +520,11 @@ async def test_serper_provider_sends_coordinate_request_and_parses_places() -> N
     assert result.provider == "serper"
     assert result.candidates[0].position == 3
     assert result.candidates[0].place_id == "ChIJ-target"
+    assert result.candidates[0].category == "Personal injury attorney"
+    assert result.candidates[0].rating == 4.8
+    assert result.candidates[0].review_count == 41
+    assert result.candidates[0].website == "https://example.com"
+    assert result.candidates[0].google_maps_url == "https://maps.google.com/?cid=123"
 
 
 async def test_serper_provider_wraps_http_errors() -> None:
@@ -468,7 +540,21 @@ async def test_serper_provider_wraps_http_errors() -> None:
 async def test_json_and_html_outputs_are_self_contained_and_escaped(
     tmp_path: Path,
 ) -> None:
-    provider = StaticProvider((RankCandidate(position=1, name="<script>Target</script>"),))
+    provider = StaticProvider(
+        (
+            RankCandidate(
+                position=1,
+                name="<script>Target</script>",
+                place_id="ChIJ-target",
+                address="123 Main St",
+                category="Attorney",
+                rating=4.9,
+                review_count=25,
+                website="https://example.com",
+                google_maps_url="https://maps.google.com/?cid=123",
+            ),
+        )
+    )
     result = await RankGridScanner(cast(RankSearchProvider, provider)).scan(
         query="<lawyer>",
         target=RankTarget("<script>Target</script>", "name"),
@@ -485,4 +571,7 @@ async def test_json_and_html_outputs_are_self_contained_and_escaped(
     assert json.loads(json_path.read_text(encoding="utf-8"))["points"][0]["rank"] == 1
     assert html_path.read_text(encoding="utf-8") == rendered
     assert "&lt;lawyer&gt;" in rendered
+    assert "Top 3 Maps profiles at every coordinate" in rendered
+    assert "Maps profile" in rendered
+    assert "4.9 (25)" in rendered
     assert "<script>" not in rendered

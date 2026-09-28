@@ -20,6 +20,7 @@ from .grid import KM_PER_DEGREE_LAT
 from .rpc.parser import ParsedPlace
 
 TargetKind = Literal["auto", "place_id", "cid", "hex_id", "name"]
+TopProfileCount = Literal[3, 5]
 
 
 class RankProviderError(RuntimeError):
@@ -28,7 +29,7 @@ class RankProviderError(RuntimeError):
 
 @dataclass(frozen=True)
 class RankCandidate:
-    """One ranked Google Maps result."""
+    """One ranked Google Maps profile."""
 
     position: int
     name: str = ""
@@ -36,6 +37,11 @@ class RankCandidate:
     cid: str = ""
     hex_id: str = ""
     address: str = ""
+    category: str = ""
+    rating: float | None = None
+    review_count: int = 0
+    website: str = ""
+    google_maps_url: str = ""
     latitude: float | None = None
     longitude: float | None = None
 
@@ -49,6 +55,11 @@ class RankCandidate:
                 "cid": self.cid,
                 "hex_id": self.hex_id,
                 "address": self.address,
+                "category": self.category,
+                "rating": self.rating,
+                "review_count": self.review_count,
+                "website": self.website,
+                "google_maps_url": self.google_maps_url,
                 "latitude": self.latitude,
                 "longitude": self.longitude,
             }.items()
@@ -303,6 +314,7 @@ class RankGridPoint:
     rank: int | None
     result_count: int
     matched_place: RankCandidate | None = None
+    top_profiles: tuple[RankCandidate, ...] = ()
     error: str = ""
 
     def to_dict(self) -> dict[str, object]:
@@ -317,6 +329,7 @@ class RankGridPoint:
         }
         if self.matched_place is not None:
             data["matched_place"] = self.matched_place.to_dict()
+        data["top_profiles"] = [profile.to_dict() for profile in self.top_profiles]
         if self.error:
             data["error"] = self.error
         return data
@@ -334,6 +347,7 @@ class RankGridResult:
     spacing_km: float
     zoom: float
     max_rank: int
+    top_profile_count: TopProfileCount
     points: tuple[RankGridPoint, ...]
     generated_at: str
 
@@ -368,6 +382,7 @@ class RankGridResult:
             "spacing_km": self.spacing_km,
             "zoom": self.zoom,
             "max_rank": self.max_rank,
+            "top_profile_count": self.top_profile_count,
             "generated_at": self.generated_at,
             "summary": self.summary(),
             "points": [point.to_dict() for point in self.points],
@@ -391,8 +406,11 @@ class RankGridScanner:
         spacing_km: float = 1.0,
         zoom: float = 14.0,
         max_rank: int = 20,
+        top_profile_count: TopProfileCount = 3,
         on_point: Callable[[RankGridPoint], None] | None = None,
     ) -> RankGridResult:
+        if top_profile_count not in (3, 5):
+            raise ValueError("top_profile_count must be 3 or 5.")
         coordinates = generate_rank_grid(
             center_latitude,
             center_longitude,
@@ -427,6 +445,12 @@ class RankGridScanner:
                     rank=matched.position if matched is not None else None,
                     result_count=len(search_result.candidates),
                     matched_place=matched,
+                    top_profiles=tuple(
+                        sorted(
+                            search_result.candidates,
+                            key=lambda candidate: candidate.position,
+                        )[:top_profile_count]
+                    ),
                     error=(search_result.error or "") if matched is None else "",
                 )
             except RankProviderError as exc:
@@ -453,6 +477,7 @@ class RankGridScanner:
             spacing_km=spacing_km,
             zoom=zoom,
             max_rank=max_rank,
+            top_profile_count=top_profile_count,
             points=tuple(points),
             generated_at=datetime.now(timezone.utc).isoformat(),
         )
@@ -531,6 +556,9 @@ def render_rank_grid_html(result: RankGridResult) -> str:
     visibility = summary["visibility_percent"]
     visibility_label = f"{visibility}%" if visibility is not None else "—"
     cells = "\n".join(_render_heatmap_cell(point) for point in result.points)
+    profile_rows = "\n".join(
+        _render_profile_rows(point, result.top_profile_count) for point in result.points
+    )
     query = html.escape(result.query)
     target = html.escape(result.target.value)
     generated_at = html.escape(result.generated_at)
@@ -562,6 +590,15 @@ def render_rank_grid_html(result: RankGridResult) -> str:
     .rank-error {{ background: #b42318; color: white; }}
     .legend {{ display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0; font-size: 13px; }}
     .legend span::before {{ content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 5px; border-radius: 3px; vertical-align: -1px; background: var(--color); }}
+    .profiles {{ margin-top: 28px; }}
+    .table-wrap {{ overflow-x: auto; border: 1px solid #e4e7ec; border-radius: 12px; background: white; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+    th, td {{ padding: 10px 12px; border-bottom: 1px solid #e4e7ec; text-align: left; vertical-align: top; }}
+    th {{ color: #667085; background: #f8fafc; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }}
+    tr:last-child td {{ border-bottom: 0; }}
+    td a {{ color: #175cd3; }}
+    .profile-name {{ font-weight: 700; }}
+    .profile-meta {{ color: #667085; font-size: 11px; }}
     footer {{ margin-top: 24px; font-size: 12px; }}
     @media (max-width: 720px) {{
       .stats {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
@@ -589,6 +626,15 @@ def render_rank_grid_html(result: RankGridResult) -> str:
     <span style="--color:#d9dee8">Not found</span>
   </div>
   <section class="grid">{cells}</section>
+  <section class="profiles">
+    <h2>Top {result.top_profile_count} Maps profiles at every coordinate</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Coordinate</th><th>Rank</th><th>Google Maps profile</th><th>Rating</th><th>Address</th><th>Links</th></tr></thead>
+        <tbody>{profile_rows}</tbody>
+      </table>
+    </div>
+  </section>
   <footer class="muted">Generated {generated_at}. Rankings are snapshots and can change between searches.</footer>
 </main>
 </body>
@@ -604,6 +650,11 @@ def _candidate_from_place(place: ParsedPlace, position: int) -> RankCandidate:
         cid=place.cid,
         hex_id=place.hex_id,
         address=place.address,
+        category=place.categories[0] if place.categories else "",
+        rating=place.rating,
+        review_count=place.review_count,
+        website=place.website,
+        google_maps_url=place.google_maps_url,
         latitude=place.latitude,
         longitude=place.longitude,
     )
@@ -634,6 +685,13 @@ def _candidate_from_serper(place: Mapping[str, object], fallback_position: int) 
         cid=_as_text(place.get("cid")),
         hex_id=_as_text(place.get("hexId") or place.get("hex_id")),
         address=_as_text(place.get("address")),
+        category=_as_text(place.get("category") or place.get("type")),
+        rating=_as_float(place.get("rating")),
+        review_count=_as_int(place.get("ratingCount") or place.get("reviews")),
+        website=_as_text(place.get("website")),
+        google_maps_url=_as_text(
+            place.get("link") or place.get("googleMapsUrl") or place.get("google_maps_url")
+        ),
         latitude=_as_float(place.get("latitude")),
         longitude=_as_float(place.get("longitude")),
     )
@@ -651,6 +709,14 @@ def _as_float(value: object) -> float | None:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
     return None
+
+
+def _as_int(value: object) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return 0
 
 
 def _normalize_name(value: str) -> str:
@@ -703,3 +769,60 @@ def _render_heatmap_cell(point: RankGridPoint) -> str:
         f'<span class="provider">{provider} · {point.result_count} results</span>'
         "</article>"
     )
+
+
+def _render_profile_rows(point: RankGridPoint, top_profile_count: int) -> str:
+    coordinate = f"{point.latitude:.5f}, {point.longitude:.5f}"
+    if not point.top_profiles:
+        status = html.escape(point.error or "No profiles returned")
+        return f'<tr><td class="profile-meta">{coordinate}</td><td colspan="5">{status}</td></tr>'
+
+    rows = []
+    for index, profile in enumerate(point.top_profiles[:top_profile_count]):
+        coordinate_cell = (
+            f'<td rowspan="{len(point.top_profiles[:top_profile_count])}" '
+            f'class="profile-meta">{coordinate}</td>'
+            if index == 0
+            else ""
+        )
+        category = (
+            f'<div class="profile-meta">{html.escape(profile.category)}</div>'
+            if profile.category
+            else ""
+        )
+        identifiers = " · ".join(
+            html.escape(value) for value in (profile.place_id, profile.cid) if value
+        )
+        identifier = f'<div class="profile-meta">{identifiers}</div>' if identifiers else ""
+        rating = (
+            f"{profile.rating:g} ({profile.review_count:,})" if profile.rating is not None else "—"
+        )
+        links = []
+        maps_url = _safe_external_url(profile.google_maps_url)
+        website = _safe_external_url(profile.website)
+        if maps_url:
+            links.append(
+                f'<a href="{html.escape(maps_url, quote=True)}" target="_blank" '
+                'rel="noreferrer">Maps profile</a>'
+            )
+        if website:
+            links.append(
+                f'<a href="{html.escape(website, quote=True)}" target="_blank" '
+                'rel="noreferrer">Website</a>'
+            )
+        rows.append(
+            "<tr>"
+            f"{coordinate_cell}"
+            f"<td>#{profile.position}</td>"
+            f'<td><div class="profile-name">{html.escape(profile.name or "Unnamed profile")}</div>'
+            f"{category}{identifier}</td>"
+            f"<td>{rating}</td>"
+            f"<td>{html.escape(profile.address) or '—'}</td>"
+            f"<td>{' · '.join(links) or '—'}</td>"
+            "</tr>"
+        )
+    return "".join(rows)
+
+
+def _safe_external_url(value: str) -> str:
+    return value if value.startswith(("https://", "http://")) else ""

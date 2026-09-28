@@ -33,6 +33,7 @@ class RankWebRequest:
     spacing_km: float
     zoom: float
     max_rank: int
+    top_profile_count: int
     provider: str
 
     @classmethod
@@ -53,6 +54,15 @@ class RankWebRequest:
         spacing_km = _number(payload, "spacing_km", default=2.0, minimum=0.01, maximum=100)
         zoom = _number(payload, "zoom", default=14.0, minimum=1, maximum=22)
         max_rank = _integer(payload, "max_rank", default=20, minimum=1, maximum=100)
+        top_profile_count = _integer(
+            payload,
+            "top_profile_count",
+            default=3,
+            minimum=1,
+            maximum=100,
+        )
+        if top_profile_count not in (3, 5):
+            raise ValueError("Top profile count must be 3 or 5.")
 
         point_count = len(keywords) * len(locations) * grid_size * grid_size
         if point_count > MAX_BATCH_POINTS:
@@ -70,6 +80,7 @@ class RankWebRequest:
             spacing_km=spacing_km,
             zoom=zoom,
             max_rank=max_rank,
+            top_profile_count=top_profile_count,
             provider=provider,
         )
 
@@ -323,7 +334,7 @@ INDEX_HTML = """<!doctype html>
     textarea { min-height: 162px; resize: vertical; }
     .target-row { display: grid; grid-template-columns: 1fr 165px; gap: 12px; }
     .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
-    .options { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-top: 18px; }
+    .options { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-top: 18px; }
     .option label { font-size: 12px; }
     .actions { display: flex; align-items: center; gap: 10px; margin-top: 22px; flex-wrap: wrap; }
     button {
@@ -366,6 +377,15 @@ INDEX_HTML = """<!doctype html>
     .heatmap { display: grid; gap: 6px; width: max-content; min-width: 100%; }
     .point { min-width: 68px; min-height: 58px; border-radius: 9px; padding: 8px; display: grid; place-items: center; text-align: center; font-weight: 850; }
     .point small { display: block; font-size: 9px; font-weight: 600; opacity: .72; }
+    .profiles-wrap { border-top: 1px solid var(--line); padding: 0 17px 17px; overflow-x: auto; }
+    .profiles-wrap h3 { margin: 16px 0 9px; }
+    .profiles-table { width: 100%; border-collapse: collapse; min-width: 820px; font-size: 12px; }
+    .profiles-table th, .profiles-table td { padding: 9px 10px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .profiles-table th { background: #f3f5f1; color: var(--muted); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+    .profile-name { font-weight: 800; }
+    .profile-meta { color: var(--muted); font-size: 10px; }
+    .profile-links { white-space: nowrap; }
+    .profile-links a { color: var(--accent); font-weight: 750; }
     .rank-good { background: #bce6c9; color: #174529; }
     .rank-mid { background: #f2de98; color: #654c08; }
     .rank-low { background: #efb8a7; color: #6d2319; }
@@ -458,6 +478,13 @@ INDEX_HTML = """<!doctype html>
               <option value="40">40</option>
               <option value="60">60</option>
               <option value="100">100</option>
+            </select>
+          </div>
+          <div class="option">
+            <label for="topProfiles">Show profiles</label>
+            <select id="topProfiles">
+              <option value="3" selected>Top 3</option>
+              <option value="5">Top 5</option>
             </select>
           </div>
           <div class="option">
@@ -571,6 +598,7 @@ INDEX_HTML = """<!doctype html>
       $("gridSize").value = "1";
       $("spacing").value = "2";
       $("maxRank").value = "20";
+      $("topProfiles").value = "3";
       updateEstimate();
     }
 
@@ -603,6 +631,50 @@ INDEX_HTML = """<!doctype html>
       return `<div class="metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`;
     }
 
+    function safeUrl(value) {
+      try {
+        const url = new URL(value);
+        return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+      } catch {
+        return "";
+      }
+    }
+
+    function renderProfileLinks(profile) {
+      const links = [];
+      const mapsUrl = safeUrl(profile.google_maps_url);
+      const website = safeUrl(profile.website);
+      if (mapsUrl) links.push(`<a href="${escapeHtml(mapsUrl)}" target="_blank" rel="noreferrer">Maps profile</a>`);
+      if (website) links.push(`<a href="${escapeHtml(website)}" target="_blank" rel="noreferrer">Website</a>`);
+      return links.join(" · ") || "—";
+    }
+
+    function renderProfileRows(result) {
+      return result.points.map(point => {
+        const coordinate = `${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}`;
+        if (!point.top_profiles.length) {
+          return `<tr><td>${coordinate}</td><td colspan="5">${escapeHtml(point.error || "No profiles returned")}</td></tr>`;
+        }
+        return point.top_profiles.map((profile, index) => {
+          const coordinateCell = index === 0
+            ? `<td rowspan="${point.top_profiles.length}">${coordinate}<div class="profile-meta">${escapeHtml(point.provider)}</div></td>`
+            : "";
+          const identity = [profile.place_id, profile.cid].filter(Boolean).map(escapeHtml).join(" · ");
+          const category = profile.category ? `<div class="profile-meta">${escapeHtml(profile.category)}</div>` : "";
+          const identifiers = identity ? `<div class="profile-meta">${identity}</div>` : "";
+          const rating = profile.rating == null ? "—" : `${profile.rating} (${(profile.review_count || 0).toLocaleString()})`;
+          return `<tr>
+            ${coordinateCell}
+            <td>#${profile.position}</td>
+            <td><div class="profile-name">${escapeHtml(profile.name || "Unnamed profile")}</div>${category}${identifiers}</td>
+            <td>${escapeHtml(rating)}</td>
+            <td>${escapeHtml(profile.address || "—")}</td>
+            <td class="profile-links">${renderProfileLinks(profile)}</td>
+          </tr>`;
+        }).join("");
+      }).join("");
+    }
+
     function render(data) {
       latestResult = data;
       const summary = data.summary;
@@ -626,6 +698,8 @@ INDEX_HTML = """<!doctype html>
             <div>${escapeHtml(label)}<small>${point.latitude.toFixed(3)}, ${point.longitude.toFixed(3)}</small></div>
           </div>`;
         }).join("");
+        const profileCount = result.top_profile_count || data.request.top_profile_count;
+        const profileRows = renderProfileRows(result);
         const visibility = scanSummary.visibility_percent === null ? "—" : `${scanSummary.visibility_percent}%`;
         return `<details>
           <summary>
@@ -634,6 +708,13 @@ INDEX_HTML = """<!doctype html>
             <span class="badge">${scanSummary.best_rank ? `Best #${scanSummary.best_rank}` : "Not found"}</span>
           </summary>
           <div class="heatmap-wrap"><div class="heatmap" style="grid-template-columns: repeat(${columns}, minmax(68px, 1fr))">${points}</div></div>
+          <div class="profiles-wrap">
+            <h3>Top ${profileCount} Google Maps profiles at every coordinate</h3>
+            <table class="profiles-table">
+              <thead><tr><th>Coordinate</th><th>Rank</th><th>Profile</th><th>Rating</th><th>Address</th><th>Links</th></tr></thead>
+              <tbody>${profileRows}</tbody>
+            </table>
+          </div>
         </details>`;
       }).join("");
       $("results").classList.add("visible");
@@ -655,6 +736,7 @@ INDEX_HTML = """<!doctype html>
         spacing_km: Number($("spacing").value),
         zoom: Number($("zoom").value),
         max_rank: Number($("maxRank").value),
+        top_profile_count: Number($("topProfiles").value),
         provider: $("provider").value
       };
       try {

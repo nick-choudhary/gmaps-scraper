@@ -53,7 +53,7 @@ center + spacing → coordinate grid → direct SearchAPI
                                       ↓ on failure/empty, when configured
                                   Serper Maps
                                       ↓
-                         target identity match → rank JSON + HTML heatmap
+                 target identity match + top profiles → rank JSON + HTML report
 ```
 
 The local rank web interface adds:
@@ -62,7 +62,7 @@ browser form → local HTTP server → named-location resolution
                                       ↓
                          keyword × location rank-grid scans
                                       ↓
-                      aggregate JSON → browser heatmaps/export
+             aggregate JSON → browser heatmaps/profile tables/export
 ```
 
 ## Storage Model

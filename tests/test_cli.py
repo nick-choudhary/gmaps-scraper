@@ -50,6 +50,7 @@ def test_rank_grid_help_exposes_provider_and_output_options() -> None:
     assert result.exit_code == 0
     assert "--target" in result.output
     assert "--provider" in result.output
+    assert "--top-profiles" in result.output
     assert "--html-output" in result.output
 
 

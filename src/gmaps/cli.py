@@ -348,6 +348,13 @@ def grid(
     show_default=True,
 )
 @click.option(
+    "--top-profiles",
+    type=click.Choice(["3", "5"]),
+    default="3",
+    show_default=True,
+    help="Google Maps profiles to capture at every coordinate.",
+)
+@click.option(
     "--provider",
     type=click.Choice(["auto", "direct", "serper"]),
     default="auto",
@@ -368,6 +375,7 @@ def rank_grid(
     spacing_km: float,
     zoom: float,
     max_rank: int,
+    top_profiles: str,
     provider: str,
     output: str,
     html_output: str,
@@ -392,6 +400,7 @@ def rank_grid(
             RankTarget,
             SerperMapsProvider,
             TargetKind,
+            TopProfileCount,
             write_rank_grid_html,
             write_rank_grid_json,
         )
@@ -426,6 +435,7 @@ def rank_grid(
                     spacing_km=spacing_km,
                     zoom=zoom,
                     max_rank=max_rank,
+                    top_profile_count=cast(TopProfileCount, int(top_profiles)),
                     on_point=lambda _point: progress.update(1),
                 )
 
@@ -472,6 +482,7 @@ def rank_web(ctx: click.Context, host: str, port: int) -> None:
         RankTarget,
         SerperMapsProvider,
         TargetKind,
+        TopProfileCount,
     )
     from .rank_web import RankWebRequest, serve_rank_web
 
@@ -527,6 +538,10 @@ def rank_web(ctx: click.Context, host: str, port: int) -> None:
                         spacing_km=request.spacing_km,
                         zoom=request.zoom,
                         max_rank=request.max_rank,
+                        top_profile_count=cast(
+                            TopProfileCount,
+                            request.top_profile_count,
+                        ),
                     )
                     scans.append({"location": location, "result": result.to_dict()})
 
@@ -565,6 +580,7 @@ def rank_web(ctx: click.Context, host: str, port: int) -> None:
                 "spacing_km": request.spacing_km,
                 "zoom": request.zoom,
                 "max_rank": request.max_rank,
+                "top_profile_count": request.top_profile_count,
                 "provider": request.provider,
             },
             "summary": {

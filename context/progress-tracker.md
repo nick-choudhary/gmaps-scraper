@@ -212,6 +212,8 @@ Full diagnosis + plan: [discovery-scheduler-plan.md](discovery-scheduler-plan.md
 - [x] Finished full verification and published the pull request.
 - [x] Added a local multi-keyword, multi-location rank-tracking interface with
   named-place resolution, configurable grids, result heatmaps, and JSON export.
+- [x] Added configurable top-three/top-five Google Maps profile snapshots at
+  every coordinate, including available ratings, reviews, addresses, IDs, and links.
 
 1. **Validate Strategy B live** on Atlanta chiropractors.
 2. **Neighborhood/admin-area query sweep** if pure geo mini-maps still re-rank the

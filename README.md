@@ -92,6 +92,7 @@ gmaps rank-grid "personal injury lawyer" \
   --target ChIJ123456789 \
   --lat 33.7490 --lng -84.3880 \
   --grid-size 5 --spacing-km 1 \
+  --top-profiles 3 \
   -o rank-grid.json --html-output rank-grid.html
 ```
 
@@ -103,9 +104,12 @@ explicitly. A global `--proxy` applies to both direct and Serper requests.
 
 Use a Google Place ID for the most reliable target match. CID, Maps hex ID, and
 exact business name are also supported through `--target-type`. The JSON output
-contains each coordinate, provider, rank, and matched listing; the HTML output
-is a standalone color-coded heatmap. Failed provider requests are excluded from
-the visibility percentage instead of being counted as target-not-found results.
+contains each coordinate, provider, target rank, matched listing, and the top
+three or five Google Maps profiles. The HTML output combines the color-coded
+heatmap with profile tables containing rank, Place ID/CID, rating and review
+count, category, address, website, and Maps link when Google returns them.
+Failed provider requests are excluded from the visibility percentage instead
+of being counted as target-not-found results.
 
 For multi-keyword and multi-location scans, start the local interface:
 
@@ -114,10 +118,12 @@ gmaps rank-web
 ```
 
 Open `http://127.0.0.1:8765`, enter one keyword and location per line, and
-configure the grid size, spacing, zoom, maximum rank, and provider. Locations
-may be plain names such as `Gainesville, Georgia` or explicit coordinates in
-`Name | latitude | longitude` format. Results include a heatmap for every
-keyword/location pair and can be exported as JSON.
+configure the grid size, spacing, zoom, maximum rank, top three or five profile
+capture, and provider. Locations may be plain names such as
+`Gainesville, Georgia` or explicit coordinates in
+`Name | latitude | longitude` format. Results include a heatmap and the
+selected top Google Maps profiles at every coordinate for every
+keyword/location pair, and can be exported as JSON.
 
 ## Output formats
 
