@@ -68,6 +68,14 @@ class ConfigurationError(GMapsError):
     pass
 
 
+class RequestHookError(GMapsError):
+    """A caller request hook failed; the original exception is ``__cause__``.
+
+    The request is not sent, and the error is never retried or ignored by
+    cookie acquisition. This includes hooks that raise an HTTP/network error.
+    """
+
+
 class PlaceNotFoundError(GMapsError):
     """Place not found errors."""
 

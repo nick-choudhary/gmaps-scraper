@@ -21,6 +21,7 @@ from .exceptions import (
     NetworkError,
     ParseError,
     RateLimitError,
+    RequestHookError,
     TimeoutError,
 )
 
@@ -32,4 +33,5 @@ __all__ = [
     "ParseError",
     "NetworkError",
     "TimeoutError",
+    "RequestHookError",
 ]

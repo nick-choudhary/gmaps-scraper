@@ -20,6 +20,9 @@ from typing import Any
 
 import httpx
 
+from .._hooks import RequestHook, _request_hooks
+from ..exceptions import RequestHookError
+
 logger = logging.getLogger(__name__)
 
 # Cookie names required for Google Maps requests
@@ -52,9 +55,11 @@ class CookieSession:
         self,
         cookie_file: str | None = None,
         timeout: float = 30.0,
+        request_hook: RequestHook | None = None,
     ):
         self._cookie_file = cookie_file
         self._timeout = timeout
+        self._request_hook = request_hook
         self._cookies: dict[str, str] = {}
         self._client: httpx.AsyncClient | None = None
 
@@ -70,7 +75,11 @@ class CookieSession:
 
     async def __aenter__(self) -> CookieSession:
         await self._init_client()
-        await self.ensure_session()
+        try:
+            await self.ensure_session()
+        except BaseException:
+            await self.__aexit__(None, None, None)
+            raise
         return self
 
     async def __aexit__(self, *args: Any) -> None:
@@ -86,6 +95,7 @@ class CookieSession:
                 timeout=httpx.Timeout(self._timeout),
                 follow_redirects=True,
                 http2=False,
+                event_hooks={"request": _request_hooks(self._request_hook)},
             )
 
     async def ensure_session(self) -> None:
@@ -131,6 +141,8 @@ class CookieSession:
             await self._client.get("https://www.google.com/")
             self._extract_cookies()
             logger.debug("Step 1 complete: %d cookies", len(self._cookies))
+        except RequestHookError:
+            raise
         except Exception as e:
             logger.warning("Step 1 failed: %s", e)
 
@@ -160,6 +172,8 @@ class CookieSession:
             )
             self._extract_cookies()
             logger.debug("Step 2 complete")
+        except RequestHookError:
+            raise
         except Exception as e:
             logger.warning("Step 2 failed: %s", e)
 
@@ -171,6 +185,8 @@ class CookieSession:
             await self._client.get("https://www.google.com/maps")
             self._extract_cookies()
             logger.debug("Step 3 complete: %d cookies", len(self._cookies))
+        except RequestHookError:
+            raise
         except Exception as e:
             logger.warning("Step 3 failed: %s", e)
 

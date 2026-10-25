@@ -107,6 +107,14 @@ async def main():
 asyncio.run(main())
 ```
 
+Python callers can pass an async `request_hook` to `GMapsClient` to inspect or
+modify each `httpx.Request` before it is sent, including consent requests and every
+redirect hop. For example, a caller can add a header or raise an exception to
+refuse a destination. A hook failure raises `gmaps.RequestHookError` immediately,
+with the original exception in `__cause__`; it is not retried or ignored during
+cookie acquisition. The default is no hook. This applies to the Maps/consent HTTP
+clients, not the separate website/contact fetchers.
+
 ## Use it with AI assistants
 
 `gmaps-scraper` ships with a built-in server (MCP) so AI assistants like Claude can
