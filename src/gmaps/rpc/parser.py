@@ -336,6 +336,16 @@ REVIEW_TEXT_VALUE_CONTAINER_INDEX = 0
 REVIEW_TEXT_VALUE_INDEX = 0
 
 
+def _is_business_place_data(place_data: Any) -> bool:
+    """Whether ``place_data`` carries a business name and address."""
+    return (
+        isinstance(place_data, list)
+        and len(place_data) > F_ADDRESS
+        and isinstance(place_data[F_NAME], str)
+        and isinstance(place_data[F_ADDRESS], str)
+    )
+
+
 def _search_place_data_entries(raw_data: list[Any]) -> list[tuple[list[Any], list[Any]]]:
     """Return place-data records from legacy and current Maps search envelopes."""
     legacy_results: Any = []
@@ -348,13 +358,19 @@ def _search_place_data_entries(raw_data: list[Any]) -> list[tuple[list[Any], lis
 
     legacy_entries: list[tuple[list[Any], list[Any]]] = []
     if isinstance(legacy_results, list):
-        for entry in legacy_results[SEARCH_FIRST_BUSINESS_INDEX:]:
-            if (
+        for index, entry in enumerate(legacy_results):
+            if not (
                 isinstance(entry, list)
                 and len(entry) > SEARCH_ENTRY_PLACE_DATA_INDEX
                 and isinstance(entry[SEARCH_ENTRY_PLACE_DATA_INDEX], list)
             ):
-                legacy_entries.append((entry, entry[SEARCH_ENTRY_PLACE_DATA_INDEX]))
+                continue
+            place_data = entry[SEARCH_ENTRY_PLACE_DATA_INDEX]
+            # data[0][1][0] is normally the metadata entry, but a query that
+            # names one place exactly gets that place alone in this slot.
+            if index < SEARCH_FIRST_BUSINESS_INDEX and not _is_business_place_data(place_data):
+                continue
+            legacy_entries.append((entry, place_data))
     if legacy_entries:
         return legacy_entries
 
@@ -369,12 +385,7 @@ def _search_place_data_entries(raw_data: list[Any]) -> list[tuple[list[Any], lis
             if not isinstance(entry, list) or len(entry) < 2:
                 continue
             place_data = entry[1]
-            if (
-                isinstance(place_data, list)
-                and len(place_data) > F_ADDRESS
-                and isinstance(place_data[F_NAME], str)
-                and isinstance(place_data[F_ADDRESS], str)
-            ):
+            if _is_business_place_data(place_data):
                 current_entries.append((entry, place_data))
         if current_entries:
             return current_entries

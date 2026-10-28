@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import httpx
+import pytest
+
+from gmaps.exceptions import AuthError, NetworkError, ParseError
 from gmaps.transport import (
     _USER_AGENTS,
     BASE_HEADERS,
@@ -89,3 +93,66 @@ class TestTransportInit:
         shuffled = HTTPTransport.shuffle_grid_order(cells)
         assert set(shuffled) == set(cells)
         assert shuffled != cells  # Very unlikely to be same order
+
+
+class TestErrorClassification:
+    """Google's own answers (a sign-in wall, an unreadable body) are raised as such, at once."""
+
+    def _transport(self, handler):
+        transport = HTTPTransport(
+            base_url="https://www.google.com", max_retries=3, retry_delay=0.0, min_delay=0.0
+        )
+        # A client that only ever talks to the mock: no request leaves the test.
+        transport._client = httpx.AsyncClient(
+            base_url="https://www.google.com", transport=httpx.MockTransport(handler)
+        )
+        return transport
+
+    async def test_sign_in_wall_is_auth_error_without_retries(self):
+        page = (
+            "<html><body>Sign in to continue "
+            "<a href='https://accounts.google.com/ServiceLogin'>Log in</a></body></html>"
+        )
+        seen = []
+
+        def handler(request):
+            seen.append(request)
+            return httpx.Response(200, text=page)
+
+        transport = self._transport(handler)
+        try:
+            with pytest.raises(AuthError):
+                await transport.get("/maps/x", response_type="json")
+        finally:
+            await transport.close()
+        assert len(seen) == 1
+
+    async def test_unreadable_body_is_parse_error_without_retries(self):
+        seen = []
+
+        def handler(request):
+            seen.append(request)
+            return httpx.Response(200, text=")]}'\n[not json")
+
+        transport = self._transport(handler)
+        try:
+            with pytest.raises(ParseError):
+                await transport.get("/maps/x", response_type="json")
+        finally:
+            await transport.close()
+        assert len(seen) == 1
+
+    async def test_server_errors_are_still_retried(self):
+        seen = []
+
+        def handler(request):
+            seen.append(request)
+            return httpx.Response(503, text="busy")
+
+        transport = self._transport(handler)
+        try:
+            with pytest.raises(NetworkError):
+                await transport.get("/maps/x", response_type="json")
+        finally:
+            await transport.close()
+        assert len(seen) == 3

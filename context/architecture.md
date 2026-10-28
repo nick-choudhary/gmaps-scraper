@@ -62,7 +62,7 @@ ParsedPlace → SearchAPI.place_details() → /maps/preview/place
 1. **Never use `br` (brotli) in Accept-Encoding** — httpx can't decode it without extra deps, causing silent empty responses
 2. **Never use `Sec-Fetch-Dest: document`** in API calls — Google returns HTML instead of JSON. Must use `empty`/`cors`.
 3. **Never stop grid search early** based on low-yield cells — randomized cell order means the next cell may be in an uncovered area
-4. **`data[0][1][0]` is metadata, not a business** — parsing starts at index 1
+4. **`data[0][1][0]` is metadata, not a business** — parsing starts at index 1, except for a query that names one place exactly: that place comes back alone in this slot and is kept when it has a name and an address
 5. **All field indices are in `parser.py` constants** — never hardcode indices in multiple files
 6. **`to_dict()` is the canonical output** — never expose raw dataclass `__dict__`
 7. **Zoom 16 is the optimal density level** — lower zoom shows fewer pins, higher shows too few results per cell
