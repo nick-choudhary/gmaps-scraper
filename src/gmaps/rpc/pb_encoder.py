@@ -31,7 +31,9 @@ and SerpApi's research.
 from __future__ import annotations
 
 import re
+import warnings
 from typing import Any, cast
+from urllib.parse import quote
 
 # Type aliases
 PbValue = str | int | float | bool | list | dict | None
@@ -68,6 +70,21 @@ def encode_pb(message: PbMessage) -> str:
     return "".join(parts)
 
 
+def encode_pb_string(value: str) -> str:
+    """Escape and URL-encode a string value for a hand-built ``pb=`` parameter.
+
+    ``!`` separates pb fields, and Google decodes ``%21`` back to ``!``, so
+    URL-encoding alone lets a ``!`` in the text split the value. Like the Maps
+    web app, write ``*`` as ``*2A`` and ``!`` as ``*21`` first.
+    """
+    return quote(_escape_pb_string(str(value)), safe="")
+
+
+def _escape_pb_string(value: str) -> str:
+    """Write ``*`` as ``*2A`` and ``!`` as ``*21``, as the Maps web app does."""
+    return value.replace("*", "*2A").replace("!", "*21")
+
+
 def _encode_field(field_num: int, type_code: str, value: PbValue) -> str | None:
     """Encode a single protobuf field."""
     if value is None:
@@ -84,7 +101,7 @@ def _encode_field(field_num: int, type_code: str, value: PbValue) -> str | None:
         s = str(value)
         if not s:
             return None
-        return f"!{field_num}s{s}"
+        return f"!{field_num}s{_escape_pb_string(s)}"
 
     if type_code in ("d", "double"):
         if isinstance(value, bool):
@@ -204,16 +221,85 @@ def build_search_pb(
     return encode_pb(message)
 
 
-def build_place_details_pb(place_id: str, language: str = "en") -> str:
-    """Build the pb= parameter for fetching place details.
+def build_place_details_path(
+    place_id: str,
+    hex_id: str,
+    ftid: str = "",
+    data_id: str = "",
+    name: str = "",
+    latitude: float = 0.0,
+    longitude: float = 0.0,
+    query: str = "",
+    language: str = "en",
+) -> str:
+    """Build the ``/maps/preview/place`` request path for a place's details.
+
+    This is the Phase 2 enrichment request. ``place_id`` (``ChIJ…``) and
+    ``hex_id`` (``0x…:0x…``) are enough: checked live, the endpoint answers in
+    full with an empty ftid, data_id and name and zero coordinates.
 
     Args:
-        place_id: Google Maps place ID.
+        place_id: ``ChIJ…`` place ID.
+        hex_id: ``0x…:0x…`` feature ID.
+        ftid: ``/g/…`` feature tracking ID, if known.
+        data_id: Internal data ID, if known.
+        name: Business name.
+        latitude: Place latitude.
+        longitude: Place longitude.
+        query: Original search query (defaults to the name).
         language: Language code.
 
     Returns:
-        Encoded pb= parameter string.
+        Path and query string, relative to ``https://www.google.com``.
     """
+    hex_enc = encode_pb_string(hex_id)
+    lat = latitude or 0.0
+    lng = longitude or 0.0
+    viewport = 898976.2597
+
+    pb = (
+        f"!1m22"
+        f"!1s{hex_enc}"
+        f"!3m12!1m3!1d{viewport}!2d{lng}!3d{lat}"
+        f"!2m3!1f0.0!2f0.0!3f0.0"
+        f"!3m2!1i1024!2i768!4f13.1"
+        f"!4m2!3d{lat}!4d{lng}"
+        f"!15m4!1m3!1s{hex_enc}!4s{encode_pb_string(ftid)}!5s{encode_pb_string(place_id)}"
+        f"!6s{encode_pb_string(query or name)}"
+        f"!12m4!2m3!1i360!2i120!4i8"
+        f"!13m57!2m2!1i203!2i100!3m2!2i4!5b1"
+        f"!6m6!1m2!1i86!2i86!1m2!1i408!2i240"
+        f"!7m33!1m3!1e1!2b0!3e3!1m3!1e2!2b1!3e2!1m3!1e2!2b0!3e3!1m3!1e8!2b0!3e3!1m3!1e10!2b0!3e3!1m3!1e10!2b1!3e2!1m3!1e10!2b0!3e4!1m3!1e9!2b1!3e2!2b1!9b0"
+        f"!15m8!1m7!1m2!1m1!1e2!2m2!1i195!2i195!3i20"
+        f"!14m2!1s{encode_pb_string(data_id)}!7e81"
+        f"!15m111!1m29!4e2!13m9!2b1!3b1!4b1!6i1!8b1!9b1!14b1!20b1!25b1"
+        f"!18m17!3b1!4b1!5b1!6b1!9b1!13b1!14b1!17b1!20b1!21b1!22b1!30b1!32b1!33m1!1b1!34b1!36e2"
+        f"!10m1!8e3!11m1!3e1!17b1!20m2!1e3!1e6!24b1!25b1!26b1!27b1!29b1!30m1!2b1!36b1!37b1"
+        f"!39m3!2m2!2i1!3i1!43b1!52b1!54m1!1b1!55b1!56m1!1b1!61m2!1m1!1e1!65m5!3m4!1m3!1m2!1i224!2i298"
+        f"!72m22!1m8!2b1!5b1!7b1!12m4!1b1!2b1!4m1!1e1!4b1"
+        f"!8m10!1m6!4m1!1e1!4m1!1e3!4m1!1e4!3sother_user_google_review_posts__and__hotel_and_vr_partner_review_posts"
+        f"!6m1!1e1!9b1!89b1!90m2!1m1!1e2!98m3!1b1!2b1!3b1!103b1!113b1!114m3!1b1!2m1!1b1!117b1!122m1!1b1!126b1!127b1!128m1!1b0"
+        f"!21m0!22m2!1e81!8e4!29m0!30m6!3b1!6m1!2b1!7m1!2b1!9b1"
+        f"!34m5!7b1!10b1!14b1!15m1!1b0!37i785"
+        f"!39s{encode_pb_string(name)}!40b1!41b1"
+    )
+    return f"/maps/preview/place?authuser=0&hl={language}&gl=us&pb={pb}&q={quote(name, safe='')}"
+
+
+def build_place_details_pb(place_id: str, language: str = "en") -> str:
+    """Build the old ``place_id:…`` pb= parameter for place details.
+
+    .. deprecated::
+        ``/maps/preview/place`` answers this request with HTTP 400. Use
+        :func:`build_place_details_path` with the place's feature ID
+        (:func:`gmaps.rpc.ids.place_id_to_hex_id`) instead.
+    """
+    warnings.warn(
+        "build_place_details_pb() builds a request Google Maps rejects; "
+        "use build_place_details_path() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     message: PbMessage = [
         (
             1,

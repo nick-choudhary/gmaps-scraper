@@ -44,8 +44,10 @@ gmaps grid "hvac" --bbox 40.4,-74.3,40.9,-73.6 --cell-size 0.5 --enrich
 ### place
 
 ```bash
-gmaps place ChIJ123456789 --enrich
+gmaps place ChIJN1t_tDeuEmsRUsoyG83frY4 --enrich
 ```
+
+`PLACE_ID` must be a `ChIJ…` place ID; any other shape is a usage error.
 
 ### reviews
 

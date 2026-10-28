@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 
 from ._auth.session import CookieSession
+from ._directions import DirectionsAPI
 from ._places import PlacesAPI
 from ._reviews import ReviewsAPI
 from ._search import SearchAPI
@@ -106,6 +107,7 @@ class GMapsClient:
 
         self._search: SearchAPI | None = None
         self._places: PlacesAPI | None = None
+        self._directions: DirectionsAPI | None = None
         self._reviews: ReviewsAPI | None = None
         self._opened = False
 
@@ -175,6 +177,7 @@ class GMapsClient:
         # Step 4: Initialize feature APIs
         self._search = SearchAPI(self._transport, self._language, validate=self._validate)
         self._places = PlacesAPI(self._transport, self._language)
+        self._directions = DirectionsAPI(self._transport, self._language)
         self._reviews = ReviewsAPI(self._transport, self._language)
 
         self._opened = True
@@ -197,6 +200,11 @@ class GMapsClient:
     def places(self) -> PlacesAPI:
         self._check_open()
         return self._places  # type: ignore[return-value]
+
+    @property
+    def directions(self) -> DirectionsAPI:
+        self._check_open()
+        return self._directions  # type: ignore[return-value]
 
     @property
     def reviews(self) -> ReviewsAPI:

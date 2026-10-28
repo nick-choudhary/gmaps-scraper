@@ -1,6 +1,7 @@
 """Tests for CLI rendering and command startup."""
 
 import click
+import pytest
 from click.testing import CliRunner
 
 from gmaps.cli import _output_places, main
@@ -42,3 +43,25 @@ def test_search_and_grid_expose_contact_attempt_limit() -> None:
 
     assert "--max-contacts" in runner.invoke(main, ["search", "--help"]).output
     assert "--max-contacts" in runner.invoke(main, ["grid", "--help"]).output
+
+
+@pytest.mark.parametrize("when", ["2026-10-29T08:30+01:00", "2026-10-29T07:30Z"])
+def test_route_rejects_times_with_a_utc_offset(when: str) -> None:
+    result = CliRunner().invoke(main, ["route", "A", "B", "--depart", when])
+
+    assert result.exit_code == 2
+    assert "without a UTC offset" in result.output
+
+
+def test_route_offers_only_verified_modes() -> None:
+    result = CliRunner().invoke(main, ["route", "A", "B", "--mode", "transit"])
+
+    assert result.exit_code == 2
+
+
+def test_place_rejects_an_id_it_cannot_look_up() -> None:
+    result = CliRunner().invoke(main, ["place", "not-a-place-id"])
+
+    assert result.exit_code == 2
+    assert "not a ChIJ... place ID" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)

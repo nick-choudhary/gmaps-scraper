@@ -1,12 +1,13 @@
-"""Updated Places API using Google Maps internal pb= protocol."""
+"""Places API using Google Maps internal pb= protocol."""
 
 from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
 
+from .rpc.ids import hex_id_to_place_id, place_id_to_hex_id
 from .rpc.parser import ParsedPlace, parse_place_details_response
-from .rpc.pb_encoder import build_place_details_pb
+from .rpc.pb_encoder import build_place_details_path
 
 if TYPE_CHECKING:
     from .transport import HTTPTransport
@@ -17,7 +18,8 @@ logger = logging.getLogger(__name__)
 class PlacesAPI:
     """Get details about a place using Google Maps internal API.
 
-    Uses /maps/preview/place pb= protocol.
+    Uses the same /maps/preview/place request as Phase 2 enrichment; a place
+    ID is converted to the feature ID that endpoint needs (see rpc.ids).
     """
 
     def __init__(self, transport: HTTPTransport, language: str = "en"):
@@ -32,23 +34,14 @@ class PlacesAPI:
 
         Returns:
             ParsedPlace with details, or None if not found.
+
+        Raises:
+            ValueError: if ``place_id`` is not a ``ChIJ…`` business/POI ID.
         """
-        pb_param = build_place_details_pb(place_id, self._language)
-
-        params: dict[str, str] = {
-            "hl": self._language,
-            "pb": pb_param,
-        }
-
-        logger.info("Fetching place: %s", place_id)
-
-        raw = await self._transport.get(
-            path="/maps/preview/place",
-            params=params,
-            response_type="json",
-        )
-
-        return parse_place_details_response(raw)
+        hex_id = place_id_to_hex_id(place_id)
+        if hex_id is None:
+            raise ValueError(f"not a ChIJ… place ID: {place_id!r}")
+        return await self._fetch(place_id, hex_id)
 
     async def get_by_hex_id(self, hex_id: str) -> ParsedPlace | None:
         """Get place details by internal hex ID.
@@ -58,19 +51,21 @@ class PlacesAPI:
 
         Returns:
             ParsedPlace or None.
+
+        Raises:
+            ValueError: if ``hex_id`` is not ``0x…:0x…``.
         """
-        # Use the same endpoint with hex_id in the pb param
-        pb_param = build_place_details_pb(hex_id, self._language)
+        place_id = hex_id_to_place_id(hex_id)
+        if place_id is None:
+            raise ValueError(f"not a 0x…:0x… feature ID: {hex_id!r}")
+        return await self._fetch(place_id, hex_id.lower())
 
-        params = {
-            "hl": self._language,
-            "pb": pb_param,
-        }
-
+    async def _fetch(self, place_id: str, hex_id: str) -> ParsedPlace | None:
+        logger.info("Fetching place: %s (%s)", place_id, hex_id)
         raw = await self._transport.get(
-            path="/maps/preview/place",
-            params=params,
+            path=build_place_details_path(
+                place_id=place_id, hex_id=hex_id, language=self._language
+            ),
             response_type="json",
         )
-
         return parse_place_details_response(raw)

@@ -66,7 +66,7 @@ Google Maps uses a custom URL parameter format (NOT standard protobuf):
 Responses are JSON arrays with anti-XSSI prefix `)]}'`:
 ```
 data[0][1]     → results array
-data[0][1][0]  → metadata (SKIP THIS)
+data[0][1][0]  → metadata (skip it), or the only result for an exact match
 data[0][1][1:] → business entries
 entry[14]      → place data (260+ sub-fields)
 ```
@@ -152,7 +152,7 @@ These change when Google updates their API. Last verified: 2026-07-01.
 - **Don't add `br` (brotli) to Accept-Encoding**. httpx can't decode it without extra deps, causing silent failures (empty responses).
 - **Don't use `Sec-Fetch-Dest: document`** in transport headers. Google returns HTML pages instead of JSON. Must use `empty`/`cors`.
 - **Don't hardcode field indices** in multiple places. Use the constants at the top of `parser.py`.
-- **Don't skip the metadata entry** at `data[0][1][0]`. It's NOT a business — parsing starts at index 1.
+- **Don't parse the metadata entry** at `data[0][1][0]` as a business — parsing starts at index 1. The exception is a query that names one place exactly: Google returns that place alone in this slot, and the parser keeps it when it has a name and an address.
 
 ## Project Conventions
 
@@ -168,6 +168,9 @@ These change when Google updates their API. Last verified: 2026-07-01.
 |------|--------------|
 | `src/gmaps/client.py` | `GMapsClient` — main entry, 3 modes, `enrich()` method |
 | `src/gmaps/_search.py` | `SearchAPI` — search, place_details, grid_search, pagination |
+| `src/gmaps/_directions.py` | `DirectionsAPI` — travel time/distance via /maps/preview/directions |
+| `src/gmaps/rpc/directions.py` | Directions request builder and parser (indices documented at top) |
+| `src/gmaps/rpc/ids.py` | `ChIJ…` place ID <-> `0x…:0x…` feature ID |
 | `src/gmaps/rpc/parser.py` | `ParsedPlace` (58 fields), all extraction logic, `to_dict()` |
 | `src/gmaps/rpc/decoder.py` | Anti-XSSI stripping, JSON/HTML detection |
 | `src/gmaps/transport.py` | HTTP client, UA rotation, jitter, retries |

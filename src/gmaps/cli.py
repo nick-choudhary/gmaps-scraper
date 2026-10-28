@@ -11,8 +11,10 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import logging
+import re
 from collections.abc import Coroutine, Sequence
 from pathlib import Path
 from typing import Any, TypeVar
@@ -20,6 +22,7 @@ from typing import Any, TypeVar
 import click
 
 from .client import GMapsClient
+from .rpc.ids import place_id_to_hex_id
 from .rpc.parser import ParsedPlace
 
 logger = logging.getLogger(__name__)
@@ -445,8 +448,84 @@ def collect(
     _run_async(_collect())
 
 
+_COORDS = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
+
+
+def _stop(value: str) -> str | tuple[float, float]:
+    match = _COORDS.match(value)
+    return (float(match.group(1)), float(match.group(2))) if match else value
+
+
+def _local_time(value: str | None) -> datetime.datetime | None:
+    if value is None:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise click.BadParameter(f"expected YYYY-MM-DDTHH:MM, got {value!r}") from exc
+    if parsed.tzinfo is not None:
+        raise click.BadParameter(f"give the stop's local time without a UTC offset, got {value!r}")
+    return parsed
+
+
 @main.command()
-@click.argument("place_id")
+@click.argument("stops", nargs=-1, required=True)
+@click.option(
+    "--mode",
+    type=click.Choice(["drive", "walk"]),
+    default="drive",
+    show_default=True,
+)
+@click.option("--depart", default=None, help="Local departure time, e.g. 2026-10-22T08:30.")
+@click.option("--arrive", default=None, help="Local arrival time, e.g. 2026-10-22T09:00.")
+@click.option("--output", "-o", default=None, help="Output JSON file path.")
+@click.pass_context
+def route(
+    ctx: click.Context,
+    stops: tuple[str, ...],
+    mode: str,
+    depart: str | None,
+    arrive: str | None,
+    output: str | None,
+) -> None:
+    """Travel time and distance through STOPS in order.
+
+    Each stop is text, a ChIJ… place ID, a 0x…:0x… feature ID, or "lat,lng".
+    """
+    if len(stops) < 2:
+        raise click.UsageError("give at least an origin and a destination")
+    if depart and arrive:
+        raise click.UsageError("use --depart or --arrive, not both")
+    departure_time = _local_time(depart)
+    arrival_time = _local_time(arrive)
+
+    async def _route() -> None:
+        client = _make_client(ctx)
+        async with client:
+            result = await client.directions.route(
+                [_stop(s) for s in stops],
+                mode=mode,
+                departure_time=departure_time,
+                arrival_time=arrival_time,
+            )
+            out = json.dumps(result.to_dict(), indent=2, ensure_ascii=output is None)
+            if output:
+                Path(output).write_text(out, encoding="utf-8")
+                click.echo(f"Saved to {output}")
+            else:
+                click.echo(out)
+
+    _run_async(_route())
+
+
+def _check_place_id(ctx: click.Context, param: click.Parameter, value: str) -> str:
+    if place_id_to_hex_id(value) is None:
+        raise click.BadParameter(f"{value!r} is not a ChIJ... place ID.")
+    return value
+
+
+@main.command()
+@click.argument("place_id", callback=_check_place_id)
 @click.option("--output", "-o", default=None, help="Output JSON file path.")
 @click.option("--enrich", is_flag=True, help="Use Phase 2 details endpoint.")
 @click.option("--cookies", default=None, help="Login cookie string or file path.")

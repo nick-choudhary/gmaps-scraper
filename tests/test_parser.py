@@ -21,6 +21,7 @@ from gmaps.rpc.parser import (
     parse_place_details_response,
     parse_search_response,
 )
+from gmaps.schema import parse_core
 
 # ── ParsedPlace dataclass tests ──
 
@@ -450,6 +451,21 @@ class TestParseSearchResponse:
         # Only 1 business, not 2 (metadata excluded)
         assert len(places) == 1
 
+    def test_parse_keeps_single_exact_match_in_first_slot(self):
+        # A query that names one place exactly gets that place alone, in the
+        # slot that otherwise holds the metadata entry.
+        business_entry = self._make_search_response()[0][1][1]
+        single = [[None, [business_entry]]]
+        assert [p.name for p in parse_search_response(single)] == ["Test Coffee Shop"]
+        assert [p["name"] for p in parse_core(single)] == ["Test Coffee Shop"]
+
+        # A nameless entry in that slot is still skipped as metadata.
+        metadata_entry = [None] * 15
+        metadata_entry[14] = [None] * 260
+        with_metadata = [[None, [metadata_entry, business_entry]]]
+        assert [p.name for p in parse_search_response(with_metadata)] == ["Test Coffee Shop"]
+        assert [p["name"] for p in parse_core(with_metadata)] == ["Test Coffee Shop"]
+
     def test_parse_current_maps_ui_envelope(self):
         legacy = self._make_search_response()
         place_data = legacy[0][1][1][14]
@@ -489,6 +505,7 @@ class TestParsePlaceDetails:
         pd[1] = "0ahUKEwi_token"
         pd[2] = ["123 Main St", "Austin, TX 78701"]
         pd[4] = [None, None, None, [None, "92 reviews"], None, None, None, 4.9]
+        pd[7] = ["https://detail-test-shop.example.com/", "detail-test-shop.example.com"]
         pd[9] = [None, None, 30.265, -97.732]
         pd[10] = "0x8644b5:0xf76b50"
         pd[11] = "Detail Test Shop"
@@ -523,6 +540,7 @@ class TestParsePlaceDetails:
         assert p.latitude == 30.265
         assert p.longitude == -97.732
         assert p.phone == "(512) 999-8888"
+        assert p.website == "https://detail-test-shop.example.com/"
 
     def test_parse_hours(self):
         raw = self._make_details_response()
