@@ -36,7 +36,7 @@ class GMapsClient:
     Modes:
         Mode 1 (default): GMapsClient() — Phase 1 search only, no login
         Mode 2: GMapsClient(enrich=True) — Phase 1 + Phase 2 details, no login
-        Mode 3: GMapsClient(enrich=True, cookie_file="login_cookies.json") — full
+        Mode 3: GMapsClient(enrich=True, login_cookies="SID=...; HSID=...") — full
 
     Usage:
         async with GMapsClient() as client:
@@ -75,7 +75,8 @@ class GMapsClient:
             jitter_pct: Jitter percentage for rate limiting (0.3 = ±30%).
             language: Language code for results.
             proxy: Optional proxy URL.
-            cookie_file: Path to persist scraped cookies.
+            cookie_file: Path to persist anonymous consent cookies; sign-in cookies
+                must use the explicit login_cookies input.
             login_cookies: Raw cookie string from a logged-in Google account
                            (enables Mode 3 — full field enrichment).
             extra_headers: Additional HTTP headers.
