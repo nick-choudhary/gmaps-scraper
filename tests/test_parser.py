@@ -139,7 +139,7 @@ class TestParsedPlace:
     def test_field_count(self):
         """Verify the documented place schema remains intentional."""
         fields = ParsedPlace.__dataclass_fields__
-        assert len(fields) == 58, f"Expected 58 fields, got {len(fields)}"
+        assert len(fields) == 59, f"Expected 59 fields, got {len(fields)}"
         # Check key fields
         for f in [
             "name",
@@ -167,6 +167,7 @@ class TestParsedPlace:
             "longitude",
             "categories",
             "hours",
+            "opening_hours",
             "popular_times",
             "timezone",
             "description",
@@ -289,6 +290,134 @@ class TestExtractHours:
         pd = [None] * 250
         _extract_hours_new(pd, place)
         assert place.hours == {}
+        assert place.opening_hours == []
+
+    def test_dated_opening_hours(self):
+        place = ParsedPlace()
+        pd = [None] * 250
+        # Day entries: [name, iso_weekday, [y, m, d], [[text, [open, close]], ...],
+        # special_flag, open_flag (2 = closed), [label, holiday, kind (1 = confirmed)]]
+        pd[203] = [
+            [
+                ["Wednesday", 3, [2026, 7, 1], [["9 AM–5:30 PM", [[9], [17, 30]]]], None, 1],
+                [
+                    "Thursday",
+                    4,
+                    [2026, 7, 2],
+                    [["11:30 AM–2:30 PM", [[11, 30], [14, 30]]], ["6:30 PM–12 AM", [[18, 30], []]]],
+                    None,
+                    1,
+                ],
+                ["Friday", 5, [2026, 7, 3], [["12 PM–4 AM", [[12], [4]]]], None, 1],
+                ["Saturday", 6, [2026, 7, 4], [["Open 24 hours", [[], []]]], None, 1],
+                [
+                    "Sunday",
+                    7,
+                    [2026, 7, 5],
+                    [["Closed"]],
+                    None,
+                    2,
+                    ["Public Holiday hours", "Public Holiday", 1],
+                ],
+                [
+                    "Monday",
+                    1,
+                    [2026, 7, 6],
+                    [["9 AM–5:30 PM", [[9], [17, 30]]]],
+                    None,
+                    1,
+                    ["Public Holiday might affect these hours", "Public Holiday", 2],
+                ],
+            ],
+            [None, None, None, None, ["Open · Closes 5:30 PM"]],
+        ]
+        _extract_hours_new(pd, place)
+        assert place.opening_hours == [
+            {
+                "date": "2026-07-01",
+                "weekday": "Wednesday",
+                "text": ["9 AM–5:30 PM"],
+                "periods": [{"open": "09:00", "close": "17:30"}],
+            },
+            {
+                "date": "2026-07-02",
+                "weekday": "Thursday",
+                "text": ["11:30 AM–2:30 PM", "6:30 PM–12 AM"],
+                "periods": [
+                    {"open": "11:30", "close": "14:30"},
+                    {"open": "18:30", "close": "24:00"},
+                ],
+            },
+            {
+                "date": "2026-07-03",
+                "weekday": "Friday",
+                "text": ["12 PM–4 AM"],
+                "periods": [{"open": "12:00", "close": "04:00", "closes_next_day": True}],
+            },
+            {
+                "date": "2026-07-04",
+                "weekday": "Saturday",
+                "text": ["Open 24 hours"],
+                "periods": [{"open": "00:00", "close": "24:00"}],
+            },
+            {
+                "date": "2026-07-05",
+                "weekday": "Sunday",
+                "text": ["Closed"],
+                "closed": True,
+                "special": {"name": "Public Holiday", "confirmed": True},
+            },
+            {
+                "date": "2026-07-06",
+                "weekday": "Monday",
+                "text": ["9 AM–5:30 PM"],
+                "periods": [{"open": "09:00", "close": "17:30"}],
+                "special": {"name": "Public Holiday", "confirmed": False},
+            },
+        ]
+        assert place.status == "Open · Closes 5:30 PM"
+        assert place.hours["Thursday"] == ["11:30 AM–2:30 PM", "6:30 PM–12 AM"]
+        business = place.to_dict()["business"]
+        assert business["opening_hours"] == place.opening_hours
+        assert business["status"] == "Open · Closes 5:30 PM"
+
+    def test_malformed_day_entries_are_skipped(self):
+        place = ParsedPlace()
+        pd = [None] * 250
+        pd[203] = [
+            [
+                ["Monday", 1, None, [["9 AM–5 PM", [[9], [17]]]], None, 1],  # no date
+                ["Tuesday", 2, [2026, 2, 30], [["9 AM–5 PM", [[9], [17]]]], None, 1],  # no such day
+                "not a day",
+                ["Wednesday"],
+            ]
+        ]
+        _extract_hours_new(pd, place)
+        assert place.opening_hours == []
+
+    def test_open_day_with_unreadable_times_is_skipped_not_closed(self):
+        place = ParsedPlace()
+        pd = [None] * 250
+        pd[203] = [
+            [
+                ["Monday", 1, [2026, 7, 6], [["9 AM–5 PM", [["9"], [17]]]], None, 1],
+                ["Tuesday", 2, [2026, 7, 7], [["9 AM–5 PM"]], None, 1],
+                [
+                    "Wednesday",
+                    3,
+                    [2026, 7, 8],
+                    [["9 AM–12 PM", [[9], [12]]], ["1–5 PM", [[13], None]]],
+                    None,
+                    1,
+                ],
+                ["Thursday", 4, [2026, 7, 9], [["Closed"]], None, 2],
+            ]
+        ]
+        _extract_hours_new(pd, place)
+        assert place.opening_hours == [
+            {"date": "2026-07-09", "weekday": "Thursday", "text": ["Closed"], "closed": True}
+        ]
+        assert place.hours["Monday"] == ["9 AM–5 PM"]
 
 
 class TestExtractCompleteAddress:

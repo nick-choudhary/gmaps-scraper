@@ -39,7 +39,7 @@ GMapsClient (client.py)          ← entry point, 3 modes
   │     ├── places()             ← /search?tbm=map
   │     ├── place_details()      ← /maps/preview/place
   │     └── grid_search()        ← grid subdivision for area coverage
-  └── Parser (rpc/parser.py)     ← 58 fields → 8 grouped JSON objects
+  └── Parser (rpc/parser.py)     ← 59 fields → 8 grouped JSON objects
 ```
 
 Three operating modes:
@@ -168,7 +168,7 @@ These change when Google updates their API. Last verified: 2026-07-01.
 |------|--------------|
 | `src/gmaps/client.py` | `GMapsClient` — main entry, 3 modes, `enrich()` method |
 | `src/gmaps/_search.py` | `SearchAPI` — search, place_details, grid_search, pagination |
-| `src/gmaps/rpc/parser.py` | `ParsedPlace` (58 fields), all extraction logic, `to_dict()` |
+| `src/gmaps/rpc/parser.py` | `ParsedPlace` (59 fields), all extraction logic, `to_dict()` |
 | `src/gmaps/rpc/decoder.py` | Anti-XSSI stripping, JSON/HTML detection |
 | `src/gmaps/transport.py` | HTTP client, UA rotation, jitter, retries |
 | `src/gmaps/grid.py` | `BoundingBox`, `GridCell`, `generate_cells()` |

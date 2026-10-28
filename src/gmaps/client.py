@@ -252,6 +252,7 @@ class GMapsClient:
                     "description",
                     "popular_times",
                     "status",
+                    "opening_hours",
                 ):
                     val = getattr(enriched, attr)
                     if val:

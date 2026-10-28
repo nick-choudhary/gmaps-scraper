@@ -7,6 +7,7 @@ internal endpoints. Field indices discovered through reverse-engineering
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -65,9 +66,11 @@ class ParsedPlace:
     # -- Business details --
     categories: list[str] = field(default_factory=list)
     hours: dict[str, list[str]] = field(default_factory=dict)
+    # Dated, machine-readable form of [203][0]; see _parse_opening_hours().
+    opening_hours: list[dict[str, Any]] = field(default_factory=list)
     popular_times: dict[str, dict[str, int]] = field(default_factory=dict)
     timezone: str = ""
-    status: str = ""
+    status: str = ""  # Maps status line, e.g. "Open · Closes 8 PM"
     description: str = ""
     enrichment_status: str = ""
     enrichment_error: str = ""
@@ -152,6 +155,7 @@ class ParsedPlace:
                 [
                     "categories",
                     "hours",
+                    "opening_hours",
                     "popular_times",
                     "timezone",
                     "status",
@@ -281,6 +285,24 @@ HOURS_DAYS_INDEX = 0
 HOURS_DAY_NAME_INDEX = 0
 HOURS_TIME_BLOCKS_INDEX = 3
 HOURS_TIME_VALUE_INDEX = 0
+# Day entry: [day_name, iso_weekday, [y, m, d], blocks, special_flag, open_flag, special]
+HOURS_DATE_INDEX = 2
+HOURS_OPEN_FLAG_INDEX = 5
+HOURS_CLOSED_FLAG = 2  # open_flag: 1 = open that day, 2 = closed
+HOURS_SPECIAL_INDEX = 6  # [label, holiday_name, kind]
+HOURS_SPECIAL_NAME_INDEX = 1
+HOURS_SPECIAL_KIND_INDEX = 2
+HOURS_SPECIAL_CONFIRMED = 1  # kind: 1 = confirmed, 2 = "might affect these hours"
+# Time block: [text, [open, close]]; a time is [hour] or [hour, minute], and [] at
+# close means midnight. Open 24 hours is [[], []].
+HOURS_BLOCK_TIMES_INDEX = 1
+HOURS_BLOCK_OPEN_INDEX = 0
+HOURS_BLOCK_CLOSE_INDEX = 1
+HOURS_TIME_HOUR_INDEX = 0
+HOURS_TIME_MINUTE_INDEX = 1
+HOURS_STATUS_INDEX = 1  # [203][1]
+HOURS_STATUS_TEXT_INDEX = 4  # [203][1][4][0], e.g. "Open · Closes 8 PM"
+HOURS_STATUS_TEXT_VALUE_INDEX = 0
 PHOTO_REFERENCE_INDEX = 0
 PHOTO_URL_INDEX = 1
 IMAGE_CATEGORY_INDEX = 2
@@ -455,7 +477,7 @@ def parse_search_response(raw_data: Any) -> list[ParsedPlace]:
 
         # Business details
         place.timezone = _safe_str(place_data, F_TIMEZONE)
-        place.status = _safe_str(place_data, F_HOURS)
+        place.status = place.status or _safe_str(place_data, F_HOURS)
         desc = _safe_list(place_data, F_DESCRIPTION)
         if desc and len(desc) > DESCRIPTION_CONTAINER_INDEX:
             description_data = desc[DESCRIPTION_CONTAINER_INDEX]
@@ -899,11 +921,128 @@ def _extract_hours_new(pd: list[Any], place: ParsedPlace) -> None:
                     time_str = str(tb[HOURS_TIME_VALUE_INDEX])
                     if day_name and time_str:
                         place.hours.setdefault(day_name, []).append(time_str)
+        place.opening_hours = _parse_opening_hours(hn)
+        place.status = _safe_deep_str(
+            hn, HOURS_STATUS_INDEX, HOURS_STATUS_TEXT_INDEX, HOURS_STATUS_TEXT_VALUE_INDEX
+        )
         return
     # Old format fallback at [34]
     ho = _safe_list(pd, F_HOURS)
     if ho:
         place.hours["raw"] = [str(h) for h in ho if h]
+
+
+def _hhmm(point: Any) -> str | None:
+    """[h] / [h, m] -> "HH:MM"; [] (midnight end) -> "24:00"; else None."""
+    if not isinstance(point, list):
+        return None
+    if not point:
+        return "24:00"
+    hour = point[HOURS_TIME_HOUR_INDEX]
+    minute = point[HOURS_TIME_MINUTE_INDEX] if len(point) > HOURS_TIME_MINUTE_INDEX else 0
+    if not isinstance(hour, int) or not isinstance(minute, int):
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _iso_date(value: Any) -> str | None:
+    """[year, month, day] -> "YYYY-MM-DD"; None if it is not a valid date."""
+    if not isinstance(value, list) or len(value) < 3:
+        return None
+    try:
+        return dt.date(*value[:3]).isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_periods(blocks: list[Any]) -> tuple[list[str], list[dict[str, Any]] | None]:
+    """A day's time blocks -> (texts as Maps shows them, periods).
+
+    Periods are None when a block has no readable open/close times.
+    """
+    texts: list[str] = []
+    periods: list[dict[str, Any]] = []
+    unreadable = False
+    for block in blocks:
+        if not isinstance(block, list) or not block:
+            continue
+        if isinstance(block[HOURS_TIME_VALUE_INDEX], str):
+            texts.append(block[HOURS_TIME_VALUE_INDEX])
+        times = _safe_list(block, HOURS_BLOCK_TIMES_INDEX)
+        if not times or len(times) <= HOURS_BLOCK_CLOSE_INDEX:
+            unreadable = True
+            continue
+        opens, closes = times[HOURS_BLOCK_OPEN_INDEX], times[HOURS_BLOCK_CLOSE_INDEX]
+        if opens == [] and closes == []:
+            periods.append({"open": "00:00", "close": "24:00"})
+            continue
+        start, end = _hhmm(opens), _hhmm(closes)
+        if start is None or end is None or start == "24:00":
+            unreadable = True
+            continue
+        period: dict[str, Any] = {"open": start, "close": end}
+        if end != "24:00" and end <= start:
+            period["closes_next_day"] = True
+        periods.append(period)
+    return texts, None if unreadable else periods
+
+
+def _parse_opening_hours(hours_block: Any) -> list[dict[str, Any]]:
+    """Parse the dated per-day hours at place_data[203] into plain dicts.
+
+    Google sends the next seven days, starting today, each with its date, so
+    holiday hours land on the right day. One dict per day, empty values left out::
+
+        {"date": "2026-07-06", "weekday": "Monday", "text": ["Closed"],
+         "special": {"name": "Public Holiday", "confirmed": True}}
+
+    ``periods`` lists ``{"open": "HH:MM", "close": "HH:MM"}``: "close" is
+    "24:00" when the place closes at midnight, "closes_next_day" is True when it
+    closes after midnight (e.g. 16:00-01:00), and open 24 hours is one
+    00:00-24:00 period. A day Maps flags as closed has "closed": True and no
+    periods. "special" is the holiday Google attaches to the date; "confirmed"
+    is False when Maps says it "might affect these hours". Unparseable entries
+    are skipped rather than guessed, including an open day whose times cannot
+    all be read, so a day without periods is never mistaken for a closed one.
+    """
+    days_raw = _safe_list(hours_block, HOURS_DAYS_INDEX)
+    if not days_raw:
+        return []
+    days: list[dict[str, Any]] = []
+    for entry in days_raw:
+        if not isinstance(entry, list) or len(entry) <= HOURS_TIME_BLOCKS_INDEX:
+            continue
+        date = _iso_date(entry[HOURS_DATE_INDEX])
+        if date is None:
+            continue
+        blocks = _safe_list(entry, HOURS_TIME_BLOCKS_INDEX) or []
+        texts, periods = _parse_periods(blocks)
+        closed = _safe_int(entry, HOURS_OPEN_FLAG_INDEX) == HOURS_CLOSED_FLAG
+        if closed:
+            periods = []
+        elif not periods:
+            continue
+        day: dict[str, Any] = {"date": date}
+        weekday = _safe_str(entry, HOURS_DAY_NAME_INDEX)
+        if weekday:
+            day["weekday"] = weekday
+        if texts:
+            day["text"] = texts
+        if periods:
+            day["periods"] = periods
+        if closed:
+            day["closed"] = True
+        special = _safe_list(entry, HOURS_SPECIAL_INDEX)
+        if special:
+            holiday: dict[str, Any] = {}
+            name = _safe_str(special, HOURS_SPECIAL_NAME_INDEX)
+            if name:
+                holiday["name"] = name
+            kind = _safe_int(special, HOURS_SPECIAL_KIND_INDEX)
+            holiday["confirmed"] = kind == HOURS_SPECIAL_CONFIRMED
+            day["special"] = holiday
+        days.append(day)
+    return days
 
 
 def _extract_media_new(pd: list[Any], place: ParsedPlace) -> None:

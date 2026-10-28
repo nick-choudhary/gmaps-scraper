@@ -133,10 +133,25 @@ Every place produces grouped JSON via `to_dict()`:
   "address": { "full": "...", "street": "...", "city": "...", ... },
   "rating": { "rating": 4.5, "review_count": 120, ... },
   "location": { "latitude": 40.71, "longitude": -74.00 },
-  "business": { "categories": [...], "hours": {...}, ... },
+  "business": { "categories": [...], "hours": {...}, "opening_hours": [...], "status": "...", ... },
   "media": { "thumbnail": "...", "author_photo": "..." },
   "amenities": { "owner": {...}, "menu": {...}, ... }
 }
 ```
 
 Empty values are omitted. `is_ad` only appears when `true`.
+
+`business.opening_hours` covers the next seven days from today, one entry per date:
+
+```
+{"date": "2026-07-06", "weekday": "Monday", "text": ["9 AM–5:30 PM"],
+ "periods": [{"open": "09:00", "close": "17:30"}],
+ "special": {"name": "Public Holiday", "confirmed": false}}
+```
+
+`close` is `"24:00"` for midnight, a period that ends after midnight has
+`"closes_next_day": true`, open 24 hours is one `00:00`–`24:00` period, and a
+closed day has `"closed": true` and no `periods`. A day whose times cannot be
+read is left out rather than shown as closed. `special` is the holiday Google attaches to that
+date; `confirmed` is `false` when Maps only says it "might affect these hours".
+`business.status` is the status line Maps shows, e.g. "Open · Closes 5:30 PM".

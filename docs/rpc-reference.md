@@ -53,7 +53,7 @@ data[0][1]           → results array
 | 61 | website | str | Website URL |
 | 116 | price_level | int | Price level (1-4) |
 | 34 | hours_old | list | Opening hours (old format) |
-| 203 | hours_new | list | Opening hours (new format, 2025+) |
+| 203 | hours_new | list | Opening hours (new format, 2025+): `[0]` = 7 dated days `[name, iso_weekday, [y,m,d], [[text, [[h,m],[h,m]]]...], special_flag, open_flag (1 open, 2 closed), [label, holiday, kind 1 confirmed / 2 may change]]`; `[1][4][0]` = status text. Parsed into `opening_hours` and `status` |
 | 36 | photos | list | Photo references |
 | 6 | is_ad | bool | Whether result is a sponsored ad |
 
