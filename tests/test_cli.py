@@ -42,3 +42,11 @@ def test_search_and_grid_expose_contact_attempt_limit() -> None:
 
     assert "--max-contacts" in runner.invoke(main, ["search", "--help"]).output
     assert "--max-contacts" in runner.invoke(main, ["grid", "--help"]).output
+
+
+def test_place_rejects_an_id_it_cannot_look_up() -> None:
+    result = CliRunner().invoke(main, ["place", "not-a-place-id"])
+
+    assert result.exit_code == 2
+    assert "not a ChIJ... place ID" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)

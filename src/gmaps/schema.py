@@ -54,7 +54,10 @@ class FieldSchema:
     )
     results_path: list[int] = field(default_factory=lambda: [0, 1])  # data[0][1] → results array
     entry_index: int = 14  # each result entry's place_data at entry[14]
-    skip_first: bool = True  # results[0] is search metadata, not a business
+    # results[0] is search metadata, except that a query naming one place exactly
+    # gets that place alone in this slot: with skip_first it is kept only when it
+    # has a name and an address.
+    skip_first: bool = True
     version: int = SCHEMA_VERSION
     note: str = "default (mirrors rpc/parser.py constants)"
 
@@ -107,18 +110,28 @@ def extract_core(place_data: Any, schema: FieldSchema = DEFAULT_SCHEMA) -> dict[
     return out
 
 
+def _is_business(place_data: list[Any], schema: FieldSchema) -> bool:
+    """Whether ``place_data`` has a name and an address at the schema's paths."""
+    return all(
+        key in schema.paths and isinstance(traverse(place_data, schema.paths[key]), str)
+        for key in ("name", "address")
+    )
+
+
 def iter_place_data(raw: Any, schema: FieldSchema = DEFAULT_SCHEMA):
     """Yield each business entry's place_data list from a raw search response."""
     results = traverse(raw, schema.results_path)
     if not isinstance(results, list):
         return
-    start = 1 if schema.skip_first else 0
-    for entry in results[start:]:
+    for index, entry in enumerate(results):
         if not isinstance(entry, list) or len(entry) <= schema.entry_index:
             continue
         pd = entry[schema.entry_index]
-        if isinstance(pd, list):
-            yield pd
+        if not isinstance(pd, list):
+            continue
+        if index == 0 and schema.skip_first and not _is_business(pd, schema):
+            continue
+        yield pd
 
 
 def parse_core(raw: Any, schema: FieldSchema = DEFAULT_SCHEMA) -> list[dict[str, Any]]:

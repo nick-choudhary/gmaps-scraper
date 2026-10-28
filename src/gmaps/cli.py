@@ -20,6 +20,7 @@ from typing import Any, TypeVar
 import click
 
 from .client import GMapsClient
+from .rpc.ids import place_id_to_hex_id
 from .rpc.parser import ParsedPlace
 
 logger = logging.getLogger(__name__)
@@ -445,8 +446,14 @@ def collect(
     _run_async(_collect())
 
 
+def _check_place_id(ctx: click.Context, param: click.Parameter, value: str) -> str:
+    if place_id_to_hex_id(value) is None:
+        raise click.BadParameter(f"{value!r} is not a ChIJ... place ID.")
+    return value
+
+
 @main.command()
-@click.argument("place_id")
+@click.argument("place_id", callback=_check_place_id)
 @click.option("--output", "-o", default=None, help="Output JSON file path.")
 @click.option("--enrich", is_flag=True, help="Use Phase 2 details endpoint.")
 @click.option("--cookies", default=None, help="Login cookie string or file path.")

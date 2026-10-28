@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import unquote
 
 import pytest
 
-from gmaps._search import GridCellProgress, SearchAPI, SearchResult
+from gmaps._search import GridCellProgress, SearchAPI, SearchResult, _build_search_url
 from gmaps.grid import BoundingBox, generate_cells
 from gmaps.rpc.parser import ParsedPlace
+from gmaps.rpc.pb_encoder import build_autocomplete_pb, build_search_pb
 from gmaps.stats import ScraperStats
 
 
@@ -547,3 +549,35 @@ async def test_minimap_does_not_split_saturated_view_with_zero_local_uniques() -
     # First full page adds 0 local uniques → stop paging; no children spawned.
     assert len(api.calls) == 1
     assert stats.cells_saturated == 0  # never reached ~120 raw with early stop
+
+
+def test_search_text_cannot_add_pb_fields() -> None:
+    url = _build_search_url("cafe!7i500!8i40", 30.2672, -97.7431)
+    # One string field, no injected !7i/!8i; the plain q= parameter is only URL-encoded.
+    assert unquote(url.split("&pb=", 1)[1]).startswith("!1scafe*217i500*218i40!4m8")
+    assert "&q=cafe%217i500%218i40&" in url
+
+
+class RecordingTransport:
+    def __init__(self) -> None:
+        self.paths: list[str] = []
+
+    async def get(self, path: str, **kwargs: Any) -> None:
+        self.paths.append(path)
+
+
+@pytest.mark.asyncio
+async def test_place_details_strings_cannot_add_pb_fields() -> None:
+    transport = RecordingTransport()
+    api = SearchAPI(transport)  # type: ignore[arg-type]
+    await api.place_details("ChIJ!x", "0x1:0x2", "/g/!y", "d!z", "Bar! *Two", query="q!w")
+    pb = unquote(transport.paths[0].split("&pb=", 1)[1].split("&q=", 1)[0])
+    for injected in ("!x", "!y", "!z", "!w", "! *"):
+        assert injected not in pb, injected
+    assert "!5sChIJ*21x!6sq*21w" in pb
+    assert "!39sBar*21 *2ATwo!40b1" in pb
+
+
+def test_encoded_pb_strings_cannot_add_pb_fields() -> None:
+    assert build_search_pb("cafe!5i21 *", 1.5, 2.5).startswith("!1m5!2scafe*215i21 *2A!3d1.5")
+    assert build_autocomplete_pb("bar!4d9").startswith("!1m4!2sbar*214d9!3d0.0")
