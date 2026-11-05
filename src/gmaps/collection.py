@@ -177,6 +177,26 @@ def choose_cell_size(bbox: BoundingBox, target_cells: int = 100) -> float:
     return size
 
 
+VIEWPORT_M_AT_ZOOM_16 = 6634.9
+
+
+def minimap_base_zoom(cell_size_km: float) -> float:
+    """UI zoom for each mini-map cell search. Env ``GMAPS_MINIMAP_BASE_ZOOM``.
+
+    Unset: 16 (the 6.6 km viewport). ``auto``: zoom in until the viewport is
+    1.2x the cell, so a page of 20 results lands mostly inside the cell instead
+    of in neighbouring cells that the footprint filter then drops. Clamped to
+    [16, 19]; cells larger than the zoom-16 viewport keep 16. A number: that zoom.
+    """
+    raw = os.environ.get("GMAPS_MINIMAP_BASE_ZOOM", "").strip().lower()
+    if not raw:
+        return 16.0
+    if raw == "auto":
+        zoom = 16.0 + math.log2(VIEWPORT_M_AT_ZOOM_16 / (1.2 * cell_size_km * 1000.0))
+        return round(min(19.0, max(16.0, zoom)), 2)
+    return float(raw)
+
+
 def _place_key(place: ParsedPlace) -> str:
     return (
         place.place_id
@@ -299,7 +319,7 @@ class CollectionRunner:
             bbox=bbox,
             cell_size_km=self.state.cell_size_km,
             max_results=self.state.max_results,
-            base_zoom=16.0,
+            base_zoom=minimap_base_zoom(self.state.cell_size_km),
             max_pages=self.minimap_max_pages,
             # Allow one split level only when a cell is truly dense with locals.
             max_depth=self.minimap_max_depth,

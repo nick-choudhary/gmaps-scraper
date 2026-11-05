@@ -603,3 +603,16 @@ async def test_minimap_does_not_split_saturated_view_with_zero_local_uniques() -
     # First full page adds 0 local uniques → stop paging; no children spawned.
     assert len(api.calls) == 1
     assert stats.cells_saturated == 0  # never reached ~120 raw with early stop
+
+
+def test_minimap_base_zoom_env(monkeypatch):
+    from gmaps.collection import minimap_base_zoom
+
+    monkeypatch.delenv("GMAPS_MINIMAP_BASE_ZOOM", raising=False)
+    assert minimap_base_zoom(2.0) == 16.0
+    monkeypatch.setenv("GMAPS_MINIMAP_BASE_ZOOM", "auto")
+    assert 17.4 < minimap_base_zoom(2.0) < 17.5  # 2.4 km viewport for a 2 km cell
+    assert minimap_base_zoom(8.0) == 16.0  # never zooms out past 16
+    assert minimap_base_zoom(0.1) == 19.0
+    monkeypatch.setenv("GMAPS_MINIMAP_BASE_ZOOM", "17")
+    assert minimap_base_zoom(2.0) == 17.0
