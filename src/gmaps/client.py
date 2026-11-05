@@ -12,6 +12,7 @@ Three operating modes:
 
 from __future__ import annotations
 
+import os
 import logging
 from pathlib import Path
 from typing import Any
@@ -305,7 +306,7 @@ class GMapsClient:
             timeout=timeout,
             max_pages=max_pages,
             concurrency=concurrency,
-            proxy=getattr(self._transport, "proxy", None),
+            proxy=None if os.environ.get("GMAPS_CONTACTS_DIRECT") else getattr(self._transport, "proxy", None),
             model_extractor=model_extractor,
         ) as extractor:
             await extractor.extract_batch(batch, max_contacts=max_contacts)

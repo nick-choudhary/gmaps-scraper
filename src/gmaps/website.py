@@ -15,6 +15,7 @@ timeout tightens at runtime to shed the slow tail. No user configuration.
 """
 
 from __future__ import annotations
+import os
 
 import asyncio
 import logging
@@ -400,7 +401,7 @@ class WebsiteContactExtractor:
         thorough. Fully automatic; no user input.
         """
         n = max(1, n_sites)
-        concurrency = min(cls._MAX_CONCURRENCY, max(4, (n + 39) // 40))
+        concurrency = int(os.environ.get("GMAPS_CONTACTS_CONCURRENCY", 0)) or min(cls._MAX_CONCURRENCY, max(4, (n + 39) // 40))
         if n <= 50:
             timeout, max_pages = 12.0, 3
         elif n <= 500:

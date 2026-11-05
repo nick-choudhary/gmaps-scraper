@@ -10,6 +10,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import asyncio
 import json
 import logging
@@ -146,7 +147,7 @@ def _output_places(
 @click.option("--lang", default="en", help="Language code.")
 @click.option("--timeout", default=30.0, help="Request timeout seconds.")
 @click.option("--retries", default=3, help="Max retry attempts.")
-@click.option("--proxy", default=None, help="Proxy URL.")
+@click.option("--proxy", default=None, envvar="GMAPS_PROXY", help="Proxy URL.")
 @click.pass_context
 def main(
     ctx: click.Context,
@@ -435,6 +436,7 @@ def collect(
                 store=store,
                 state=state,
                 progress=lambda message: click.echo(message, err=True),
+                minimap_max_depth=int(os.environ.get("GMAPS_MAX_DEPTH", "1")),
             )
             places, manifest = await runner.run()
 

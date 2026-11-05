@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 import time
 from typing import Any
 
@@ -227,7 +228,8 @@ class HTTPTransport:
             request_headers.update(headers)
 
         last_error: Exception | None = None
-        for attempt in range(self.max_retries):
+        rl_tries = 0
+        for attempt in range(self.max_retries + 8):
             try:
                 response = await self.client.get(
                     path,
@@ -236,6 +238,15 @@ class HTTPTransport:
                 )
                 self._last_request_time = time.monotonic()
                 self._request_count += 1
+
+                if response.status_code == 429 and rl_tries < 8 and self.proxy:
+                    # Rotate to a fresh proxy IP (new Apify session + new connection) and retry.
+                    rl_tries += 1
+                    self.proxy = re.sub(r"//[^:@/]+:", f"//session-r{random.randint(10**8, 10**9)}:", self.proxy, count=1)
+                    self._client = None  # old client left for GC; in-flight requests on it finish
+                    await self.open()
+                    await asyncio.sleep(1 + random.random() * 2 * rl_tries)
+                    continue
 
                 if response.status_code == 429:
                     retry_after = _parse_retry_after(response.headers.get("retry-after"))
@@ -345,7 +356,8 @@ class HTTPTransport:
             json_data = None
 
         last_error: Exception | None = None
-        for attempt in range(self.max_retries):
+        rl_tries = 0
+        for attempt in range(self.max_retries + 8):
             try:
                 response = await self.client.post(
                     path,
@@ -356,6 +368,15 @@ class HTTPTransport:
                 )
                 self._last_request_time = time.monotonic()
                 self._request_count += 1
+
+                if response.status_code == 429 and rl_tries < 8 and self.proxy:
+                    # Rotate to a fresh proxy IP (new Apify session + new connection) and retry.
+                    rl_tries += 1
+                    self.proxy = re.sub(r"//[^:@/]+:", f"//session-r{random.randint(10**8, 10**9)}:", self.proxy, count=1)
+                    self._client = None  # old client left for GC; in-flight requests on it finish
+                    await self.open()
+                    await asyncio.sleep(1 + random.random() * 2 * rl_tries)
+                    continue
 
                 if response.status_code == 429:
                     retry_after = _parse_retry_after(response.headers.get("retry-after"))

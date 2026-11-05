@@ -372,7 +372,7 @@ def build_default_chain(
     if firecrawl.is_available():
         fetchers.append(firecrawl)
 
-    resolved_proxy = _detect_proxy(proxy)
+    resolved_proxy = None if os.environ.get("GMAPS_CONTACTS_DIRECT") else _detect_proxy(proxy)
     if resolved_proxy:
         fetchers.append(
             HTTPFetcher(proxy=resolved_proxy, name="proxy", max_html_bytes=max_html_bytes)
