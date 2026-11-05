@@ -88,6 +88,17 @@ POLICIES: dict[str, Policy] = {
         "deep pages + tight buffer (6 pages, buffer 1.0)",
         {"minimap_max_pages": 6, "footprint_buffer": 1.0},
     ),
+    # Density split: quarter any view whose full first page kept >= N new locals.
+    "P8": Policy(
+        "P8",
+        "density split (>=8 new locals on a full page, depth 3)",
+        {"minimap_max_depth": 3, "minimap_split_min_local": 8},
+    ),
+    "P9": Policy(
+        "P9",
+        "density split (>=4 new locals on a full page, depth 3)",
+        {"minimap_max_depth": 3, "minimap_split_min_local": 4},
+    ),
 }
 DEFAULT_POLICIES = ["P0", "P1a", "P1c", "P2", "P3", "P4"]
 

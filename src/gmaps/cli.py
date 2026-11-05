@@ -437,6 +437,11 @@ def collect(
                 state=state,
                 progress=lambda message: click.echo(message, err=True),
                 minimap_max_depth=int(os.environ.get("GMAPS_MAX_DEPTH", "1")),
+                minimap_split_min_local=(
+                    int(os.environ["GMAPS_SPLIT_MIN_LOCAL"])
+                    if os.environ.get("GMAPS_SPLIT_MIN_LOCAL")
+                    else None
+                ),
             )
             places, manifest = await runner.run()
 

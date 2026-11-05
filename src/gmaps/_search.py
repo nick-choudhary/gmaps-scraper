@@ -423,8 +423,16 @@ class SearchAPI:
         stats: Any = None,
         on_cell: Callable[[GridCellProgress], None] | None = None,
         on_footprint_drop: Callable[[ParsedPlace], None] | None = None,
+        split_min_local: int | None = None,
     ) -> list[tuple[ParsedPlace, GridCell]]:
         """Adaptive mini-maps inside a fixed fence (Strategy B).
+
+        ``split_min_local`` switches the split rule from saturation to density:
+        any view with a full first page that kept at least this many new local
+        places is quartered (UI zoom+1), up to ``max_depth``. Google ranking
+        hides in-cell places long before a view reaches ~120 raw results (2026-11
+        county pilot: half-size cells found up to 2.1x more with 0 saturated
+        cells), so the saturation rule alone almost never fires.
 
         Outer ``bbox`` never grows. For each mini-map (seed tile or child):
 
@@ -654,9 +662,12 @@ class SearchAPI:
             # full page of metro ranking must not explode the queue (sparse
             # categories were burning minutes on empty children).
             min_local_to_split = max(8, page_cap * 4)
+            if split_min_local is not None:
+                dense = full_pages >= 1 and len(retained) >= split_min_local
+            else:
+                dense = saturated and len(retained) >= min_local_to_split
             can_split = (
-                saturated
-                and len(retained) >= min_local_to_split
+                dense
                 and task.depth < max_depth
                 and (cell_km / 2.0) >= min_cell_km
                 and task.zoom < max_zoom

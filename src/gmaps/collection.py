@@ -216,6 +216,7 @@ class CollectionRunner:
         footprint_buffer: float = 1.5,
         minimap_max_pages: int = 6,
         minimap_max_depth: int = 1,
+        minimap_split_min_local: int | None = None,
         on_footprint_drop: Callable[[ParsedPlace], None] | None = None,
     ) -> None:
         # Diversity/gap-fill are optional coverage polish. Defaults off: live
@@ -237,6 +238,9 @@ class CollectionRunner:
         # context/discovery-scheduler-plan.md.
         self.minimap_max_pages = minimap_max_pages
         self.minimap_max_depth = minimap_max_depth
+        # None = split only saturated views; N = split any dense view (see
+        # minimap_grid_search split_min_local).
+        self.minimap_split_min_local = minimap_split_min_local
         self.on_footprint_drop = on_footprint_drop
         self.stats = ScraperStats()
         self.stats.total_requests = state.discovery_requests
@@ -299,6 +303,7 @@ class CollectionRunner:
             max_pages=self.minimap_max_pages,
             # Allow one split level only when a cell is truly dense with locals.
             max_depth=self.minimap_max_depth,
+            split_min_local=self.minimap_split_min_local,
             filter_to_bbox=True,
             footprint_buffer=self.footprint_buffer,
             boundary_contains=fence,

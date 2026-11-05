@@ -328,6 +328,62 @@ async def test_minimap_paginates_full_pages_but_does_not_split_before_120() -> N
 
 
 @pytest.mark.asyncio
+async def test_minimap_density_split_quarters_dense_view_before_120() -> None:
+    """split_min_local: a full page with enough new locals splits, no 120 needed."""
+    bbox = BoundingBox(0.0, 0.0, 0.01, 0.01)
+    page1 = [
+        ParsedPlace(place_id=f"a{i}", latitude=0.005, longitude=0.005)
+        for i in range(SearchAPI.MAX_PER_PAGE)
+    ]
+    page2 = [ParsedPlace(place_id="b0", latitude=0.005, longitude=0.005)]
+    children = [[ParsedPlace(place_id="child-new", latitude=0.006, longitude=0.006)], [], [], []]
+    api = FakeMiniMapAPI([page1, page2, *children])
+    stats = ScraperStats()
+
+    results = await api.minimap_grid_search(
+        "coffee",
+        bbox,
+        cell_size_km=100,
+        max_results=500,
+        shuffle_cells=False,
+        max_depth=1,
+        min_cell_km=0.01,
+        split_min_local=8,
+        stats=stats,
+    )
+
+    assert len(api.calls) == 6  # 2 parent pages + 4 children
+    assert all(call["zoom"] == 17.0 for call in api.calls[2:])
+    assert "child-new" in {place.place_id for place, _ in results}
+    assert stats.cells_saturated == 0
+
+
+@pytest.mark.asyncio
+async def test_minimap_density_split_skips_view_with_few_new_locals() -> None:
+    bbox = BoundingBox(0.0, 0.0, 0.01, 0.01)
+    page1 = [
+        ParsedPlace(place_id=f"a{i}", latitude=0.005, longitude=0.005) for i in range(3)
+    ] + [
+        ParsedPlace(place_id=f"far{i}", latitude=5.0, longitude=5.0)
+        for i in range(SearchAPI.MAX_PER_PAGE - 3)
+    ]
+    api = FakeMiniMapAPI([page1, [], [], [], []])
+
+    await api.minimap_grid_search(
+        "coffee",
+        bbox,
+        cell_size_km=100,
+        max_results=500,
+        shuffle_cells=False,
+        max_depth=1,
+        min_cell_km=0.01,
+        split_min_local=8,
+    )
+
+    assert all(call["zoom"] == 16.0 for call in api.calls)
+
+
+@pytest.mark.asyncio
 async def test_minimap_saturated_120_splits_and_zooms_viewport() -> None:
     """~6 full pages (~120) → saturated → quarter + UI zoom+1 (viewport shrinks)."""
     bbox = BoundingBox(0.0, 0.0, 0.02, 0.02)
