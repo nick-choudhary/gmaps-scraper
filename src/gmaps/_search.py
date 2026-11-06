@@ -416,6 +416,7 @@ class SearchAPI:
         filter_to_bbox: bool = True,
         footprint_buffer: float = 1.5,
         boundary_contains: Callable[[float | None, float | None], bool] | None = None,
+        seed_contains: Callable[[float, float], bool] | None = None,
         shuffle_cells: bool = True,
         skip_cell_keys: set[str] | None = None,
         initial_seen_ids: set[str] | None = None,
@@ -463,6 +464,13 @@ class SearchAPI:
         if not seed_cells:
             # Fall back to bbox grid if polygon filter wiped everything (bad geom).
             seed_cells = list(generate_cells(bbox, cell_size_km))
+        # Seed mask (e.g. near towns): skips seeds only; results still pass the fence.
+        # A mask that keeps nothing is ignored, so an area is never silently skipped.
+        if seed_contains is not None:
+            near = [cell for cell in seed_cells if seed_contains(cell.lat, cell.lon)]
+            logger.info("Seed mask kept %d/%d seed cells", len(near), len(seed_cells))
+            if near:
+                seed_cells = near
         if shuffle_cells:
             random.shuffle(seed_cells)
 

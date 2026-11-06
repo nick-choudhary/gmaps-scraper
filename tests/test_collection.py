@@ -222,3 +222,21 @@ def test_checkpoint_round_trip_preserves_discovery_counters() -> None:
     assert restored.duplicate_occurrences == 120
     assert restored.outside_boundary_occurrences == 30
     assert restored.saturated_cells == 2
+
+
+def test_seed_mask_keeps_seeds_within_radius_of_any_point() -> None:
+    from gmaps.collection import seed_mask
+
+    keep = seed_mask({"seed_points": [[36.0, -81.0], [37.0, -81.0]], "seed_radius_km": 10})
+    assert keep is not None
+    assert keep(36.05, -81.0)  # ~5.6 km from the first point
+    assert keep(37.0, -81.1)  # ~8.9 km from the second
+    assert not keep(36.5, -81.0)  # ~55 km from both
+
+
+def test_seed_mask_is_off_without_points_or_radius() -> None:
+    from gmaps.collection import seed_mask
+
+    assert seed_mask({}) is None
+    assert seed_mask({"seed_points": [[36.0, -81.0]]}) is None
+    assert seed_mask({"seed_points": [], "seed_radius_km": 10}) is None

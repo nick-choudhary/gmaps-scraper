@@ -616,3 +616,45 @@ def test_minimap_base_zoom_env(monkeypatch):
     assert minimap_base_zoom(0.1) == 19.0
     monkeypatch.setenv("GMAPS_MINIMAP_BASE_ZOOM", "17")
     assert minimap_base_zoom(2.0) == 17.0
+
+
+@pytest.mark.asyncio
+async def test_minimap_seed_mask_searches_only_kept_seeds() -> None:
+    """A seed mask (e.g. near towns) skips seeds; the fence still filters results."""
+    bbox = BoundingBox(0.0, 0.0, 0.04, 0.04)
+    every = generate_cells(bbox, 1.0)
+    kept = [c for c in every if c.lat < 0.01]
+    assert 0 < len(kept) < len(every)
+    api = FakeMiniMapAPI([])
+
+    await api.minimap_grid_search(
+        "coffee",
+        bbox,
+        cell_size_km=1.0,
+        max_results=50,
+        boundary_contains=lambda _lat, _lng: True,
+        seed_contains=lambda lat, _lng: lat < 0.01,
+        shuffle_cells=False,
+    )
+
+    assert len(api.calls) == len(kept)
+    assert all(call["latitude"] < 0.01 for call in api.calls)
+
+
+@pytest.mark.asyncio
+async def test_minimap_seed_mask_that_keeps_nothing_searches_the_whole_fence() -> None:
+    """No seed near any town: search the full fenced grid rather than nothing."""
+    bbox = BoundingBox(0.0, 0.0, 0.04, 0.04)
+    api = FakeMiniMapAPI([])
+
+    await api.minimap_grid_search(
+        "coffee",
+        bbox,
+        cell_size_km=1.0,
+        max_results=50,
+        boundary_contains=lambda _lat, _lng: True,
+        seed_contains=lambda _lat, _lng: False,
+        shuffle_cells=False,
+    )
+
+    assert len(api.calls) == len(generate_cells(bbox, 1.0))

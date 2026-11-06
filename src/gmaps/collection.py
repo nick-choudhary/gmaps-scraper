@@ -197,6 +197,26 @@ def minimap_base_zoom(cell_size_km: float) -> float:
     return float(raw)
 
 
+def seed_mask(resolved: dict[str, Any]) -> Callable[[float, float], bool] | None:
+    """Seed filter from a resolved location's ``seed_points`` ([lat, lon] pairs, e.g. ZIP
+    centroids) and ``seed_radius_km``: keep seed cells whose centre is within the radius of a
+    point. Rural counties are mostly empty land (2026-11 replay: within 10 km of a ZIP centroid
+    kept 97-100% of places). None unless both keys are set."""
+    points = [(float(a), float(b)) for a, b in resolved.get("seed_points") or ()]
+    radius = float(resolved.get("seed_radius_km") or 0)
+    if not points or radius <= 0:
+        return None
+
+    def keep(lat: float, lon: float) -> bool:
+        for a, b in points:
+            dx = math.radians(lon - b) * math.cos(math.radians((lat + a) / 2))
+            if 6371.0 * math.hypot(dx, math.radians(lat - a)) <= radius:
+                return True
+        return False
+
+    return keep
+
+
 def _place_key(place: ParsedPlace) -> str:
     return (
         place.place_id
@@ -327,6 +347,7 @@ class CollectionRunner:
             filter_to_bbox=True,
             footprint_buffer=self.footprint_buffer,
             boundary_contains=fence,
+            seed_contains=seed_mask(self.state.resolved_location),
             stats=self.stats,
             skip_cell_keys=self.state.completed_cells,
             initial_seen_ids={_place_key(place) for place in places},
